@@ -60,6 +60,10 @@ class MindMapRequest(BaseModel):
         default="auto",
         pattern="^(auto|llm|deterministic)$",
     )
+    retrieval_mode: str = Field(
+        default="hybrid",
+        pattern="^(hybrid|vector|keyword)$",
+    )
 
 
 class MindMapResponse(BaseModel):

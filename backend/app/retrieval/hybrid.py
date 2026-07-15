@@ -99,10 +99,24 @@ class HybridSearch:
                     await self._sql_search(sql_query, collection, per_collection, filters)
                 )
         if mode_normalized == "vector":
-            return sorted(vector_results, key=lambda doc: doc.score, reverse=True)[:top_k]
+            ranked = sorted(vector_results, key=lambda doc: doc.score, reverse=True)
+            return teaching_rerank(query, ranked, top_k=top_k)
         if mode_normalized == "keyword":
-            return sorted(sql_results, key=lambda doc: doc.score, reverse=True)[:top_k]
-        return reciprocal_rank_fusion(vector_results, sql_results, top_k=top_k)
+            ranked = sorted(sql_results, key=lambda doc: doc.score, reverse=True)
+            return teaching_rerank(query, ranked, top_k=top_k)
+        fused = reciprocal_rank_fusion(
+            vector_results,
+            sql_results,
+            top_k=max(top_k * 3, top_k),
+            alpha=0.30,
+        )
+        return teaching_rerank(
+            query,
+            fused,
+            top_k=top_k,
+            vector_keys={(doc.source_table, doc.source_id) for doc in vector_results},
+            sql_keys={(doc.source_table, doc.source_id) for doc in sql_results},
+        )
 
     async def _vector_search(
         self,
@@ -378,13 +392,41 @@ class HybridSearch:
         ]
 
 
+_TEACHING_TERMS = {
+    "opioid",
+    "opioids",
+    "naloxone",
+    "overdose",
+    "substance",
+    "addiction",
+    "interprofessional",
+    "ipe",
+    "collaborat",
+    "simulation",
+    "debrief",
+    "competenc",
+    "rural",
+    "georgia",
+    "hpsa",
+    "shortage",
+    "allied",
+    "behavioral",
+    "nursing",
+    "therapy",
+    "occupational",
+    "physical",
+}
+
+
 def reciprocal_rank_fusion(
     vector_results: list[RetrievedDoc],
     sql_results: list[RetrievedDoc],
     top_k: int,
-    alpha: float = 0.6,
+    alpha: float = 0.30,
     k: int = 60,
 ) -> list[RetrievedDoc]:
+    """Fuse ranks with keyword-heavy weighting (default alpha=0.30 for vectors)."""
+
     by_source: dict[tuple[str, str], RetrievedDoc] = {}
     scores: defaultdict[tuple[str, str], float] = defaultdict(float)
 
@@ -408,6 +450,60 @@ def reciprocal_rank_fusion(
         doc = by_source[key]
         fused.append(doc.model_copy(update={"score": score}))
     return sorted(fused, key=lambda doc: doc.score, reverse=True)[:top_k]
+
+
+def teaching_rerank(
+    query: str,
+    docs: list[RetrievedDoc],
+    *,
+    top_k: int,
+    vector_keys: set[tuple[str, str]] | None = None,
+    sql_keys: set[tuple[str, str]] | None = None,
+) -> list[RetrievedDoc]:
+    """Rerank fused results for allied health teaching usefulness."""
+
+    query_terms = {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", query.lower())
+        if token not in _STOPWORDS
+    }
+    strong_query_terms = query_terms & _TEACHING_TERMS
+    vector_keys = vector_keys or set()
+    sql_keys = sql_keys or set()
+
+    reranked: list[RetrievedDoc] = []
+    for doc in docs:
+        key = (doc.source_table, doc.source_id)
+        title = (doc.title or "").strip().lower()
+        blob = f"{title} {(doc.text or '')[:1200].lower()}"
+        teaching_hits = sum(1 for term in _TEACHING_TERMS if term in blob)
+        query_hits = sum(1 for term in strong_query_terms if term in blob)
+        in_vector = key in vector_keys
+        in_sql = key in sql_keys
+
+        score = float(doc.score)
+        if in_vector and in_sql:
+            score *= 1.25
+        if teaching_hits >= 2:
+            score *= 1.35
+        elif teaching_hits == 1:
+            score *= 1.15
+        if query_hits >= 1:
+            score *= 1.20
+
+        # Soft semantic neighbors without teaching overlap.
+        if in_vector and not in_sql and teaching_hits == 0:
+            score *= 0.45
+        # Ultra-generic CIP / short titles unless body has teaching terms.
+        compact_title = title.rstrip(".")
+        if len(compact_title.split()) <= 2 and teaching_hits == 0:
+            score *= 0.35
+        elif len(compact_title.split()) <= 2 and teaching_hits == 1:
+            score *= 0.75
+
+        reranked.append(doc.model_copy(update={"score": score}))
+
+    return sorted(reranked, key=lambda item: item.score, reverse=True)[:top_k]
 
 
 def _qdrant_filter(filters: dict[str, Any]) -> models.Filter | None:

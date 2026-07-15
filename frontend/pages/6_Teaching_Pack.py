@@ -35,7 +35,7 @@ if not response:
                 {
                     "query": query,
                     "max_nodes": 30,
-                    "min_confidence": 0.3,
+                    "min_confidence": 0.45,
                     "collections": st.session_state.get(
                         "planning_collections",
                         [

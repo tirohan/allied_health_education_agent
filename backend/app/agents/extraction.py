@@ -53,7 +53,9 @@ async def extraction_node(
                 )
                 if llm_entities:
                     if requested_mode == "llm":
-                        entities, relations = llm_entities, llm_relations
+                        entities = llm_entities
+                        entity_ids = {item.entity_id for item in entities}
+                        relations = _drop_dangling_relations(llm_relations, entity_ids)
                         extraction_mode = "llm_structured"
                     else:
                         entities, relations = _merge_extractions(
@@ -152,7 +154,12 @@ async def _llm_extract(
 ) -> tuple[list[Entity], list[Relation]]:
     from openai import AsyncOpenAI
 
-    docs = state.get("retrieved_docs", [])[:20]
+    # Prefer highest-scoring docs; keep context small for latency.
+    ranked_docs = sorted(
+        state.get("retrieved_docs", []),
+        key=lambda doc: float(doc.score or 0.0),
+        reverse=True,
+    )[:6]
     payload = [
         {
             "id": doc.id,
@@ -160,9 +167,9 @@ async def _llm_extract(
             "source_table": doc.source_table,
             "source_id": doc.source_id,
             "title": doc.title,
-            "text": doc.text[:800],
+            "text": doc.text[:300],
         }
-        for doc in docs
+        for doc in ranked_docs
     ]
     allowed_entity_types = ", ".join(item.value for item in EntityType)
     allowed_relation_types = ", ".join(item.value for item in RelationType)
@@ -192,6 +199,7 @@ async def _llm_extract(
             {"role": "user", "content": prompt},
         ],
         temperature=0.1,
+        max_tokens=1200,
     )
     content = response.choices[0].message.content or "{}"
     data = json.loads(content)
@@ -208,6 +216,18 @@ async def _llm_extract(
     if not entities:
         raise ValueError("LLM returned no valid entities")
     return entities, relations
+
+
+def _drop_dangling_relations(
+    relations: list[Relation],
+    entity_ids: set[str],
+) -> list[Relation]:
+    return [
+        relation
+        for relation in relations
+        if relation.source_entity_id in entity_ids
+        and relation.target_entity_id in entity_ids
+    ]
 
 
 def _merge_extractions(
@@ -240,7 +260,9 @@ def _merge_extractions(
     }
     for relation in llm_relations:
         relation_by_id[relation.relation_id] = relation
-    return list(by_id.values()), list(relation_by_id.values())
+    entity_ids = set(by_id.keys())
+    relations = _drop_dangling_relations(list(relation_by_id.values()), entity_ids)
+    return list(by_id.values()), relations
 
 
 _ENTITY_ALIASES = {

@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from backend.app.agents.state import (
     AgentStep,
     Entity,
@@ -34,16 +36,42 @@ STATUS_COLORS: dict[VerificationStatus, str] = {
     VerificationStatus.REFUTED: "#E74C3C",
 }
 
+# Keep teaching maps diverse and readable.
+TYPE_QUOTAS: dict[EntityType, int] = {
+    EntityType.TOPIC: 2,
+    EntityType.PAPER: 4,
+    EntityType.RESOURCE: 5,
+    EntityType.PROGRAM: 4,
+    EntityType.COUNTY: 4,
+    EntityType.SIMULATION_CASE: 3,
+    EntityType.COMPETENCY: 3,
+    EntityType.SHORTAGE_AREA: 2,
+    EntityType.INSTITUTION: 2,
+    EntityType.DISCIPLINE: 2,
+    EntityType.AUTHOR: 2,
+}
+
+STATUS_RANK = {
+    VerificationStatus.CONFIRMED: 0,
+    VerificationStatus.INFERRED: 1,
+    VerificationStatus.UNVERIFIED: 2,
+    VerificationStatus.REFUTED: 3,
+}
+
 
 async def mindmap_node(state: MindMapState) -> MindMapState:
     verification_by_id = {
         result.entity_or_relation_id: result for result in state.get("verification_results", [])
     }
-    nodes = [
+    min_confidence = float(state.get("min_confidence") or 0.0)
+    max_nodes = int(state.get("max_nodes") or 50)
+
+    candidates = [
         _node_from_entity(entity, verification_by_id.get(entity.entity_id))
         for entity in state.get("extracted_entities", [])
         if _status(verification_by_id.get(entity.entity_id)) != VerificationStatus.REFUTED
     ]
+    nodes = _prune_nodes(candidates, min_confidence=min_confidence, max_nodes=max_nodes)
     node_ids = {node.id for node in nodes}
     edges = [
         _edge_from_relation(relation, verification_by_id.get(relation.relation_id))
@@ -67,9 +95,75 @@ async def mindmap_node(state: MindMapState) -> MindMapState:
             AgentStep(
                 agent="mindmap",
                 message=f"Built graph with {len(nodes)} nodes and {len(edges)} edges.",
+                metadata={
+                    "min_confidence": min_confidence,
+                    "max_nodes": max_nodes,
+                    "pruned_from": len(candidates),
+                },
             ),
         ],
     }
+
+
+def _prune_nodes(
+    nodes: list[MindMapNode],
+    *,
+    min_confidence: float,
+    max_nodes: int,
+) -> list[MindMapNode]:
+    if not nodes:
+        return []
+
+    topics = [node for node in nodes if node.entity_type == EntityType.TOPIC]
+    others = [node for node in nodes if node.entity_type != EntityType.TOPIC]
+
+    def sort_key(node: MindMapNode) -> tuple[int, int, float]:
+        return (
+            STATUS_RANK.get(VerificationStatus(node.verification_status), 9),
+            0 if node.confidence >= min_confidence else 1,
+            -float(node.confidence),
+        )
+
+    others_sorted = sorted(others, key=sort_key)
+    selected: list[MindMapNode] = []
+    # Always keep topic roots first.
+    selected.extend(sorted(topics, key=sort_key)[: TYPE_QUOTAS[EntityType.TOPIC]])
+
+    per_type: dict[EntityType, int] = defaultdict(int)
+    for node in selected:
+        per_type[EntityType(node.entity_type)] += 1
+
+    for node in others_sorted:
+        entity_type = EntityType(node.entity_type)
+        # Soft floor: keep CONFIRMED items near threshold; drop weak UNVERIFIED.
+        if node.confidence < min_confidence:
+            if VerificationStatus(node.verification_status) != VerificationStatus.CONFIRMED:
+                continue
+            if node.confidence < max(0.25, min_confidence - 0.15):
+                continue
+        quota = TYPE_QUOTAS.get(entity_type, 3)
+        if per_type[entity_type] >= quota:
+            continue
+        selected.append(node)
+        per_type[entity_type] += 1
+        if len(selected) >= max_nodes:
+            break
+
+    # If still under max_nodes, fill with best remaining confirmed/inferred items.
+    if len(selected) < max_nodes:
+        selected_ids = {node.id for node in selected}
+        for node in others_sorted:
+            if node.id in selected_ids:
+                continue
+            if node.confidence < min_confidence and VerificationStatus(
+                node.verification_status
+            ) != VerificationStatus.CONFIRMED:
+                continue
+            selected.append(node)
+            if len(selected) >= max_nodes:
+                break
+
+    return selected
 
 
 def _node_from_entity(entity: Entity, verification: VerificationResult | None) -> MindMapNode:

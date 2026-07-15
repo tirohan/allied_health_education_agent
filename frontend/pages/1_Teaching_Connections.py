@@ -64,7 +64,7 @@ if st.button("Build teaching map", type="primary"):
             {
                 "query": query,
                 "max_nodes": max_nodes,
-                "min_confidence": 0.3,
+                "min_confidence": 0.45,
                 "collections": collections,
                 "filters": st.session_state.get("planning_filters", {"state": "GA"}),
             },
