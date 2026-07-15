@@ -73,6 +73,7 @@ class QdrantIndexer:
         collection: RetrievalCollection,
         batch_size: int = 500,
         limit: int | None = None,
+        mode: str = "incremental",
     ) -> IndexResult:
         await self._ensure_collection(collection)
         fetchers = {
@@ -84,21 +85,31 @@ class QdrantIndexer:
         }
         rows = await fetchers[collection](limit)
 
+        checkpoint_key = f"index:{collection.value}:last_offset"
+        start_offset = 0
+        if mode == "incremental":
+            checkpoint = await self.redis.get_json(checkpoint_key)
+            try:
+                start_offset = int(checkpoint) if checkpoint is not None else 0
+            except ValueError:
+                start_offset = 0
+        rows = rows[start_offset:]
+
         indexed = 0
         skipped = 0
-        for offset in range(0, len(rows), batch_size):
-            batch = rows[offset : offset + batch_size]
+        for local_offset in range(0, len(rows), batch_size):
+            batch = rows[local_offset : local_offset + batch_size]
             points = await self._rows_to_points(collection, batch)
             if points:
                 await self.qdrant.client.upsert(collection_name=collection.value, points=points)
                 indexed += len(points)
             skipped += len(batch) - len(points)
             await self.redis.set_checkpoint(
-                f"index:{collection.value}:last_offset",
-                offset + len(batch),
+                checkpoint_key,
+                start_offset + local_offset + len(batch),
             )
             # Pace large OpenAI embedding jobs to stay under TPM limits.
-            if collection == RetrievalCollection.PAPERS and offset + batch_size < len(rows):
+            if collection == RetrievalCollection.PAPERS and local_offset + batch_size < len(rows):
                 await asyncio.sleep(0.75)
         return IndexResult(collection=collection, indexed=indexed, skipped=skipped)
 
@@ -210,12 +221,16 @@ class QdrantIndexer:
         collection: RetrievalCollection,
         rows: list[dict[str, Any]],
     ) -> list[models.PointStruct]:
-        texts = [self._document_text(collection, row) for row in rows]
-        vectors = await self.embedder.embed_many(texts)
+        candidates = [
+            (row, text)
+            for row in rows
+            if (text := self._document_text(collection, row)).strip()
+        ]
+        if not candidates:
+            return []
+        vectors = await self.embedder.embed_many([text for _, text in candidates])
         points: list[models.PointStruct] = []
-        for row, text, vector in zip(rows, texts, vectors, strict=True):
-            if not text.strip():
-                continue
+        for (row, text), vector in zip(candidates, vectors, strict=True):
             point_id = self._point_id(collection, row)
             payload = self._payload(collection, row, text)
             points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))

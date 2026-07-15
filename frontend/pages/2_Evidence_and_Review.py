@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from frontend.api_client import post
+from frontend.api_client import ApiError, post, safe_call
 from frontend.components.educator_panel import render_plain_evidence_list
 from frontend.components.role_selector import render_role_selector
 
@@ -27,19 +27,31 @@ if not response:
     st.stop()
 
 if not cards:
-    cards = post(
-        "/api/v1/educator/enrich",
-        {
-            "query": st.session_state.get("planning_query", response["graph"].get("query", "")),
-            "role": st.session_state.get("educator_role"),
-            "graph": response["graph"],
-        },
-    ).get("cards", [])
-    st.session_state["educator_cards"] = cards
+    try:
+        cards = safe_call(
+            "Loading evidence...",
+            post,
+            "/api/v1/educator/enrich",
+            {
+                "query": st.session_state.get(
+                    "planning_query", response["graph"].get("query", "")
+                ),
+                "role": st.session_state.get("educator_role"),
+                "graph": response["graph"],
+            },
+        ).get("cards", [])
+        st.session_state["educator_cards"] = cards
+    except ApiError as exc:
+        st.error(f"Couldn't load evidence: {exc}")
+        st.stop()
 
 render_plain_evidence_list(cards)
 
 st.subheader("Review queue for faculty")
+if not cards:
+    st.info("No evidence cards are available for this teaching map yet.")
+    st.stop()
+
 rows = [
     {
         "Item": card["label"],
@@ -58,7 +70,11 @@ selected_id = st.selectbox(
     options=list(options.keys()),
     format_func=lambda key: options[key],
 )
-card = next(item for item in cards if item["node_id"] == selected_id)
+card = next((item for item in cards if item["node_id"] == selected_id), None)
+if card is None:
+    st.info("Select an item above to submit a faculty decision.")
+    st.stop()
+
 decision = st.radio(
     "Faculty decision",
     ["Useful", "Not relevant", "Needs review"],
@@ -67,7 +83,9 @@ decision = st.radio(
 notes = st.text_area("Notes for the review team")
 if st.button("Save faculty review", type="primary"):
     advanced = card.get("advanced") or {}
-    result = post(
+    result = safe_call(
+        "Saving your review...",
+        post,
         "/api/v1/educator/review",
         {
             "record_type": advanced.get("source_table") or card["entity_type"],

@@ -1,6 +1,6 @@
 import streamlit as st
 
-from frontend.api_client import post
+from frontend.api_client import ApiError, post
 from frontend.components.role_selector import render_role_selector
 
 st.set_page_config(page_title="Curriculum Builder", layout="wide")
@@ -12,6 +12,9 @@ st.caption(
 
 with st.sidebar:
     render_role_selector()
+
+if st.session_state.pop("goto_page_hint", None) == "Curriculum Builder":
+    st.caption("Opened from your teaching map selection.")
 
 query = st.text_area(
     "Planning question",
@@ -26,51 +29,57 @@ response = st.session_state.get("mindmap_response")
 if not response:
     st.warning("No teaching map yet. Build one first, or generate one below.")
     if st.button("Generate teaching map for this question", type="primary"):
-        with st.spinner("Building curriculum pathway..."):
-            response = post(
-                "/api/v1/mindmap",
-                {
-                    "query": query,
-                    "max_nodes": 30,
-                    "min_confidence": 0.45,
-                    "collections": st.session_state.get(
-                        "planning_collections",
-                        [
-                            "papers",
-                            "resources",
-                            "programs",
-                            "communities",
-                            "simulation_cases",
-                        ],
-                    ),
-                    "filters": st.session_state.get("planning_filters", {"state": "GA"}),
-                },
-            )
-            enrich = post(
-                "/api/v1/educator/enrich",
+        try:
+            with st.spinner("Building curriculum pathway..."):
+                response = post(
+                    "/api/v1/mindmap",
+                    {
+                        "query": query,
+                        "max_nodes": 30,
+                        "min_confidence": 0.45,
+                        "collections": st.session_state.get(
+                            "planning_collections",
+                            [
+                                "papers",
+                                "resources",
+                                "programs",
+                                "communities",
+                                "simulation_cases",
+                            ],
+                        ),
+                        "filters": st.session_state.get("planning_filters", {"state": "GA"}),
+                    },
+                )
+                enrich = post(
+                    "/api/v1/educator/enrich",
+                    {
+                        "query": query,
+                        "role": st.session_state.get("educator_role"),
+                        "graph": response["graph"],
+                    },
+                )
+            st.session_state["mindmap_response"] = response
+            st.session_state["educator_cards"] = enrich.get("cards", [])
+            st.session_state["planning_query"] = query
+            st.rerun()
+        except ApiError as exc:
+            st.error(f"Couldn't build the teaching map: {exc}")
+    st.stop()
+
+if st.button("Build curriculum outline", type="primary"):
+    try:
+        with st.spinner("Assembling learning pathway..."):
+            outline = post(
+                "/api/v1/educator/curriculum",
                 {
                     "query": query,
                     "role": st.session_state.get("educator_role"),
                     "graph": response["graph"],
                 },
             )
-            st.session_state["mindmap_response"] = response
-            st.session_state["educator_cards"] = enrich.get("cards", [])
-            st.session_state["planning_query"] = query
-            st.rerun()
-    st.stop()
-
-if st.button("Build curriculum outline", type="primary"):
-    with st.spinner("Assembling learning pathway..."):
-        outline = post(
-            "/api/v1/educator/curriculum",
-            {
-                "query": query,
-                "role": st.session_state.get("educator_role"),
-                "graph": response["graph"],
-            },
-        )
         st.session_state["curriculum_outline"] = outline
+    except ApiError as exc:
+        st.error(f"Couldn't build the curriculum outline: {exc}")
 
 outline = st.session_state.get("curriculum_outline")
 if not outline:

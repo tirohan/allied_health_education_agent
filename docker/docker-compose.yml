@@ -61,8 +61,12 @@ services:
         "--server.headless=true",
         "--browser.gatherUsageStats=false",
       ]
+    env_file:
+      - ../.env
     environment:
-      # Streamlit server calls the API over the Docker network.
+      # Streamlit server calls the API over the Docker network. API_KEY (if set)
+      # comes from ../.env via env_file above, so it stays in sync with the api
+      # service's auth requirement.
       API_URL: http://api:8000
     ports:
       - "8501:8501"

@@ -8,10 +8,16 @@ async def research_node(state: MindMapState, config: RunnableConfig) -> MindMapS
     services = config["configurable"]["services"]
     search = HybridSearch(services.postgres, services.qdrant, services.embedder)
     retrieval_mode = str(state.get("retrieval_mode") or "hybrid")
+    # Retrieval depth is deliberately decoupled from max_nodes: max_nodes caps the
+    # *rendered* graph size (applied later during pruning in mindmap.py), but
+    # retrieval needs a wider pool of candidate documents to extract from and
+    # verify, regardless of how small the final map should be.
+    retrieval_top_k = max(int(state.get("max_nodes") or 50) * 3, 30)
+    retrieval_top_k = min(retrieval_top_k, 150)
     docs = await search.search(
         query=state.get("refined_query") or state["query"],
         collections=[RetrievalCollection(collection) for collection in state.get("collections", [])],
-        top_k=state.get("max_nodes", 50),
+        top_k=retrieval_top_k,
         filters=state.get("filters", {}),
         mode=retrieval_mode,
     )

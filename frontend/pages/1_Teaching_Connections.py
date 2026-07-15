@@ -1,6 +1,6 @@
 import streamlit as st
 
-from frontend.api_client import post
+from frontend.api_client import ApiError, post
 from frontend.components.educator_panel import render_educator_node_card, render_plain_evidence_list
 from frontend.components.graph_viz import render_mindmap
 from frontend.components.guided_starters import render_guided_starters
@@ -58,28 +58,31 @@ query = st.text_area(
 )
 
 if st.button("Build teaching map", type="primary"):
-    with st.spinner("Connecting topics, materials, programs, and community context..."):
-        response = post(
-            "/api/v1/mindmap",
-            {
-                "query": query,
-                "max_nodes": max_nodes,
-                "min_confidence": 0.45,
-                "collections": collections,
-                "filters": st.session_state.get("planning_filters", {"state": "GA"}),
-            },
-        )
-        enrich = post(
-            "/api/v1/educator/enrich",
-            {
-                "query": query,
-                "role": role,
-                "graph": response["graph"],
-            },
-        )
+    try:
+        with st.spinner("Connecting topics, materials, programs, and community context..."):
+            response = post(
+                "/api/v1/mindmap",
+                {
+                    "query": query,
+                    "max_nodes": max_nodes,
+                    "min_confidence": 0.45,
+                    "collections": collections,
+                    "filters": st.session_state.get("planning_filters", {"state": "GA"}),
+                },
+            )
+            enrich = post(
+                "/api/v1/educator/enrich",
+                {
+                    "query": query,
+                    "role": role,
+                    "graph": response["graph"],
+                },
+            )
         st.session_state["mindmap_response"] = response
         st.session_state["educator_cards"] = enrich.get("cards", [])
         st.session_state["planning_query"] = query
+    except ApiError as exc:
+        st.error(f"Couldn't build the teaching map: {exc}")
 
 response = st.session_state.get("mindmap_response")
 cards = st.session_state.get("educator_cards", [])

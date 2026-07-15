@@ -162,7 +162,10 @@ def role_options() -> list[dict[str, str]]:
 
 
 def audience_for_role(role: EducatorRole | str | None) -> str:
-    role_enum = EducatorRole(role) if role else EducatorRole.RESEARCHER
+    try:
+        role_enum = EducatorRole(role) if role else EducatorRole.RESEARCHER
+    except ValueError as exc:
+        raise ValueError(f"Invalid role: {role!r}") from exc
     focuses = ROLE_FOCUS[role_enum]
     if role_enum == EducatorRole.SIMULATION_DIRECTOR:
         return "Simulation educators and IPE facilitators"
@@ -233,7 +236,13 @@ def plain_evidence_sentence(node: dict[str, Any]) -> str:
 
 def why_appeared(node: dict[str, Any], query: str, role: str | None) -> str:
     entity_type = str(node.get("entity_type") or "Item")
-    role_text = ROLE_LABELS.get(EducatorRole(role), "educators") if role else "educators"
+    if role:
+        try:
+            role_text = ROLE_LABELS.get(EducatorRole(role), "educators")
+        except ValueError as exc:
+            raise ValueError(f"Invalid role: {role!r}") from exc
+    else:
+        role_text = "educators"
     if entity_type == "County":
         return (
             f"This county helps ground your question about local community need for {role_text}."
@@ -325,9 +334,16 @@ def build_curriculum_outline(
         "Connect learner discussion to local county or shortage context",
         "Close with reflection and curriculum adaptation notes",
     ]
+    if role:
+        try:
+            role_label = ROLE_LABELS.get(EducatorRole(role), "Educator")
+        except ValueError as exc:
+            raise ValueError(f"Invalid role: {role!r}") from exc
+    else:
+        role_label = "Educator"
     outline = {
         "title": f"Curriculum outline for {topic.get('label') or 'allied health teaching'}",
-        "role": ROLE_LABELS.get(EducatorRole(role), "Educator") if role else "Educator",
+        "role": role_label,
         "planning_question": query,
         "recommended_topic": topic.get("label"),
         "learning_objectives": learning_objectives,

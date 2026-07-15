@@ -2,7 +2,7 @@ import json
 
 import streamlit as st
 
-from frontend.api_client import post, post_bytes
+from frontend.api_client import ApiError, post, post_bytes
 from frontend.components.role_selector import render_role_selector
 
 st.set_page_config(page_title="Teaching Pack", layout="wide")
@@ -29,43 +29,49 @@ response = st.session_state.get("mindmap_response")
 if not response:
     st.warning("Build a teaching map first so the pack has connected materials.")
     if st.button("Generate teaching map", type="primary"):
-        with st.spinner("Gathering materials..."):
-            response = post(
-                "/api/v1/mindmap",
-                {
-                    "query": query,
-                    "max_nodes": 30,
-                    "min_confidence": 0.45,
-                    "collections": st.session_state.get(
-                        "planning_collections",
-                        [
-                            "papers",
-                            "resources",
-                            "programs",
-                            "communities",
-                            "simulation_cases",
-                        ],
-                    ),
-                    "filters": st.session_state.get("planning_filters", {"state": "GA"}),
-                },
-            )
+        try:
+            with st.spinner("Gathering materials..."):
+                response = post(
+                    "/api/v1/mindmap",
+                    {
+                        "query": query,
+                        "max_nodes": 30,
+                        "min_confidence": 0.45,
+                        "collections": st.session_state.get(
+                            "planning_collections",
+                            [
+                                "papers",
+                                "resources",
+                                "programs",
+                                "communities",
+                                "simulation_cases",
+                            ],
+                        ),
+                        "filters": st.session_state.get("planning_filters", {"state": "GA"}),
+                    },
+                )
             st.session_state["mindmap_response"] = response
             st.session_state["planning_query"] = query
             st.rerun()
+        except ApiError as exc:
+            st.error(f"Couldn't build the teaching map: {exc}")
     st.stop()
 
 if st.button("Build teaching pack", type="primary"):
-    with st.spinner("Assembling teaching pack..."):
-        pack = post(
-            "/api/v1/educator/teaching-pack",
-            {
-                "query": query,
-                "role": st.session_state.get("educator_role"),
-                "graph": response["graph"],
-                "format": "json",
-            },
-        )
+    try:
+        with st.spinner("Assembling teaching pack..."):
+            pack = post(
+                "/api/v1/educator/teaching-pack",
+                {
+                    "query": query,
+                    "role": st.session_state.get("educator_role"),
+                    "graph": response["graph"],
+                    "format": "json",
+                },
+            )
         st.session_state["teaching_pack"] = pack
+    except ApiError as exc:
+        st.error(f"Couldn't build the teaching pack: {exc}")
 
 pack = st.session_state.get("teaching_pack")
 if not pack:
@@ -117,15 +123,16 @@ if export_format == "json":
     )
 else:
     try:
-        content, content_type = post_bytes(
-            "/api/v1/educator/teaching-pack",
-            {
-                "query": query,
-                "role": st.session_state.get("educator_role"),
-                "graph": response["graph"],
-                "format": export_format,
-            },
-        )
+        with st.spinner(f"Preparing {export_format.upper()} export..."):
+            content, content_type = post_bytes(
+                "/api/v1/educator/teaching-pack",
+                {
+                    "query": query,
+                    "role": st.session_state.get("educator_role"),
+                    "graph": response["graph"],
+                    "format": export_format,
+                },
+            )
         ext = "docx" if export_format == "docx" else "md"
         st.download_button(
             f"Download {export_format.upper()}",
@@ -133,5 +140,5 @@ else:
             file_name=f"teaching_pack.{ext}",
             mime=content_type,
         )
-    except Exception as exc:  # noqa: BLE001
+    except ApiError as exc:
         st.error(f"Export failed: {exc}")

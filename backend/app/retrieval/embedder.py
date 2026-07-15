@@ -2,9 +2,11 @@ import asyncio
 import hashlib
 import logging
 
-from openai import AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 logger = logging.getLogger(__name__)
+
+_RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APITimeoutError)
 
 
 class Embedder:
@@ -13,7 +15,7 @@ class Embedder:
     def __init__(self, model: str, api_key: str | None, vector_size: int = 1536) -> None:
         self.model = model
         self.vector_size = vector_size
-        self._client = AsyncOpenAI(api_key=api_key) if api_key else None
+        self._client = AsyncOpenAI(api_key=api_key, timeout=30.0) if api_key else None
 
     async def embed(self, text: str) -> list[float]:
         vectors = await self.embed_many([text])
@@ -32,11 +34,12 @@ class Embedder:
                     input=normalized,
                 )
                 return [item.embedding for item in response.data]
-            except RateLimitError as exc:
+            except _RETRYABLE_ERRORS as exc:
                 last_error = exc
                 wait_s = min(20.0, 1.5 * (2**attempt))
                 logger.warning(
-                    "OpenAI embedding rate limited (attempt %s); sleeping %.1fs",
+                    "OpenAI embedding call failed (%s, attempt %s); sleeping %.1fs",
+                    type(exc).__name__,
                     attempt + 1,
                     wait_s,
                 )

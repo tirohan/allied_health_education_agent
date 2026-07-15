@@ -2,7 +2,7 @@ from typing import Any
 
 import streamlit as st
 
-from frontend.api_client import get
+from frontend.api_client import ApiError, get
 
 
 FALLBACK_STARTERS = [
@@ -72,7 +72,8 @@ FALLBACK_STARTERS = [
 def load_starters() -> list[dict[str, Any]]:
     try:
         return get("/api/v1/educator/starters").get("starters", FALLBACK_STARTERS)
-    except Exception:
+    except ApiError:
+        st.caption("⚠️ Using default workflows — couldn't reach the server.")
         return FALLBACK_STARTERS
 
 

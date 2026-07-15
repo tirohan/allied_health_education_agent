@@ -2,7 +2,7 @@ from typing import Any
 
 import streamlit as st
 
-from frontend.api_client import post
+from frontend.api_client import post, safe_call
 
 
 def _card_for_node(
@@ -51,12 +51,12 @@ def render_educator_node_card(
                         st.toast("Saved to your teaching list.")
                 elif action in {"Open Curriculum Builder", "Use in syllabus", "Map to resources"}:
                     st.session_state["goto_page_hint"] = "Curriculum Builder"
-                    st.toast("Open Curriculum Builder from the sidebar to turn this into a syllabus outline.")
+                    st.switch_page("pages/4_Curriculum_Builder.py")
                 elif action in {"Compare counties", "Open Gap Finder"}:
                     st.session_state["goto_page_hint"] = "Gap Finder"
                     if card.get("label"):
                         st.session_state["gap_county"] = card["label"]
-                    st.toast("Open Gap Finder from the sidebar to compare shortage vs teaching support.")
+                    st.switch_page("pages/5_Gap_Finder.py")
                 elif action == "Open resource":
                     if card.get("source_url"):
                         st.link_button("Open original source", card["source_url"])
@@ -81,7 +81,9 @@ def render_educator_node_card(
     )
     if st.button("Submit review", key=f"review_submit_{card['node_id']}"):
         advanced = card.get("advanced") or {}
-        result = post(
+        result = safe_call(
+            "Saving your review...",
+            post,
             "/api/v1/educator/review",
             {
                 "record_type": advanced.get("source_table") or card["entity_type"],

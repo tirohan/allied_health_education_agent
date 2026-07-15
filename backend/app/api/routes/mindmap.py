@@ -1,8 +1,10 @@
+import hashlib
 import json
 import time
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Request
+import structlog
+from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from backend.app.agents.graph import compiled_graph, run_mindmap_pipeline
@@ -10,18 +12,47 @@ from backend.app.agents.state import MindMapState
 from backend.app.schemas.api import MindMapRequest, MindMapResponse
 
 router = APIRouter(prefix="/api/v1", tags=["mindmap"])
+logger = structlog.get_logger(__name__)
+
+
+def _cache_key(body: MindMapRequest) -> str:
+    payload = json.dumps(body.model_dump(mode="json"), sort_keys=True)
+    return "mindmap:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @router.post("/mindmap")
 async def generate_mindmap(request: Request, body: MindMapRequest) -> MindMapResponse:
     start = time.perf_counter()
     services = request.app.state.services
+    cache_key = _cache_key(body)
+
+    try:
+        cached_json = await services.redis.get_json(cache_key)
+    except Exception as exc:  # noqa: BLE001 - a cache outage must not break the request
+        cached_json = None
+        logger.warning("mindmap_cache_read_failed", error=str(exc))
+
+    if cached_json is not None:
+        try:
+            cached_response = MindMapResponse.model_validate_json(cached_json)
+            cached_response.cached = True
+            return cached_response
+        except Exception as exc:  # noqa: BLE001 - fall through to a fresh computation
+            logger.warning("mindmap_cache_deserialize_failed", error=str(exc))
+
     initial_state = _initial_state(body)
     final_state = await run_mindmap_pipeline(initial_state, services)
+    if final_state.get("error"):
+        logger.error("mindmap_pipeline_failed", error=final_state["error"])
+        raise HTTPException(
+            status_code=502, detail=f"Mind map generation failed: {final_state['error']}"
+        )
     graph = final_state["mindmap_graph"]
     if graph is None:
-        raise RuntimeError("Mind map pipeline completed without a graph")
-    return MindMapResponse(
+        raise HTTPException(
+            status_code=500, detail="Mind map pipeline completed without a graph"
+        )
+    response = MindMapResponse(
         graph=graph,
         citations=final_state.get("citations", []),
         agent_trace=final_state.get("agent_trace", []),
@@ -29,6 +60,15 @@ async def generate_mindmap(request: Request, body: MindMapRequest) -> MindMapRes
         processing_time_ms=int((time.perf_counter() - start) * 1000),
         cached=False,
     )
+
+    try:
+        await services.redis.set_json(
+            cache_key, response.model_dump_json(), services.settings.cache_ttl_seconds
+        )
+    except Exception as exc:  # noqa: BLE001 - a cache outage must not break the request
+        logger.warning("mindmap_cache_write_failed", error=str(exc))
+
+    return response
 
 
 @router.get("/mindmap/stream")

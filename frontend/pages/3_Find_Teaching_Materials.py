@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from frontend.api_client import post
+from frontend.api_client import ApiError, post
 from frontend.components.role_selector import render_role_selector
 
 st.set_page_config(page_title="Find Teaching Materials", layout="wide")
@@ -33,20 +33,25 @@ query = st.text_input(
 )
 
 if st.button("Search materials", type="primary"):
-    with st.spinner("Searching trusted education sources..."):
-        response = post(
-            "/api/v1/search",
-            {
-                "query": query,
-                "collections": collections,
-                "top_k": top_k,
-                "filters": st.session_state.get("planning_filters", {}),
-            },
-        )
+    try:
+        with st.spinner("Searching trusted education sources..."):
+            response = post(
+                "/api/v1/search",
+                {
+                    "query": query,
+                    "collections": collections,
+                    "top_k": top_k,
+                    "filters": st.session_state.get("planning_filters", {}),
+                },
+            )
         st.session_state["search_response"] = response
+    except ApiError as exc:
+        st.error(f"Search failed: {exc}")
 
 response = st.session_state.get("search_response")
-if response:
+if response is not None and not response.get("results"):
+    st.info("No matching materials found. Try a broader query or different sources.")
+elif response:
     type_map = {
         "papers": "Research article",
         "resources": "Teaching resource",

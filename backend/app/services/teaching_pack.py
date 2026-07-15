@@ -22,6 +22,13 @@ def build_teaching_pack(
     cases = by_type.get("SimulationCase", [])[:1]
     counties = by_type.get("County", [])[:3]
     outline = build_curriculum_outline(graph, query, role)
+    if role:
+        try:
+            role_label = ROLE_LABELS.get(EducatorRole(role), "Educator")
+        except ValueError as exc:
+            raise ValueError(f"Invalid role: {role!r}") from exc
+    else:
+        role_label = "Educator"
 
     citations = []
     for node in resources + papers + cases + counties:
@@ -38,7 +45,7 @@ def build_teaching_pack(
     return {
         "title": "Allied Health Teaching Pack",
         "generated_at": datetime.now(UTC).isoformat(),
-        "role": ROLE_LABELS.get(EducatorRole(role), "Educator") if role else "Educator",
+        "role": role_label,
         "planning_question": query,
         "resources": [item.get("label") for item in resources],
         "papers": [item.get("label") for item in papers],

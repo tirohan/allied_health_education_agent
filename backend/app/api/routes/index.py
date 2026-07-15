@@ -20,6 +20,7 @@ async def index_collection(request: Request, body: IndexRequest) -> IndexRespons
         collection=body.collection,
         batch_size=body.batch_size,
         limit=body.limit,
+        mode=body.mode,
     )
     return IndexResponse(
         collection=result.collection,

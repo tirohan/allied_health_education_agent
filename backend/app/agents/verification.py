@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
@@ -65,9 +66,20 @@ async def verify_entity(db: Postgres, entity: Entity) -> VerificationResult:
             f"Expected source_table={table}; got {entity.source_table}",
         )
 
+    key = _coerce_key(entity.source_id, EntityType(entity.entity_type))
+    if key is None:
+        return _result(
+            entity.entity_id,
+            VerificationStatus.REFUTED,
+            entity.confidence,
+            "direct_lookup",
+            f"{table}.{key_column}",
+            f"source_id={entity.source_id!r} is not a valid key for {table}.{key_column}",
+        )
+
     row = await db.fetchrow(
         f"SELECT {key_column}, {label_column} FROM {table} WHERE {key_column} = $1 LIMIT 1",
-        _coerce_key(entity.source_id, EntityType(entity.entity_type)),
+        key,
     )
     if row is None:
         return _result(
@@ -137,12 +149,19 @@ async def verify_all(
     entities: list[Entity],
     relations: list[Relation],
 ) -> list[VerificationResult]:
-    entity_results = [await verify_entity(db, entity) for entity in entities]
+    # verify_entity now handles bad source_ids by returning a REFUTED result
+    # instead of raising, so it is safe to fan these out concurrently rather
+    # than doing one DB round-trip at a time.
+    entity_results = await asyncio.gather(
+        *[verify_entity(db, entity) for entity in entities],
+        return_exceptions=False,
+    )
     entities_by_id = {entity.entity_id: entity for entity in entities}
-    relation_results = [
-        await verify_relation(db, relation, entities_by_id) for relation in relations
-    ]
-    return entity_results + relation_results
+    relation_results = await asyncio.gather(
+        *[verify_relation(db, relation, entities_by_id) for relation in relations],
+        return_exceptions=False,
+    )
+    return list(entity_results) + list(relation_results)
 
 
 async def verification_node(state: MindMapState, config: RunnableConfig) -> MindMapState:
@@ -333,7 +352,10 @@ def _result(
     )
 
 
-def _coerce_key(source_id: str, entity_type: EntityType) -> object:
+def _coerce_key(source_id: str, entity_type: EntityType) -> object | None:
     if entity_type == EntityType.INSTITUTION:
-        return int(source_id)
+        try:
+            return int(source_id)
+        except (TypeError, ValueError):
+            return None
     return source_id

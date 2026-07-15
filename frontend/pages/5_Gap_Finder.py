@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from frontend.api_client import post
+from frontend.api_client import ApiError, post
 from frontend.components.role_selector import render_role_selector
 
 st.set_page_config(page_title="Gap Finder", layout="wide")
@@ -14,6 +14,9 @@ st.caption(
 with st.sidebar:
     render_role_selector()
 
+if st.session_state.pop("goto_page_hint", None) == "Gap Finder":
+    st.caption("Opened from your teaching map selection.")
+
 topic = st.text_input(
     "Topic",
     value=st.session_state.get("gap_topic", "opioid"),
@@ -25,20 +28,23 @@ county = st.text_input(
 )
 
 if st.button("Find teaching gaps", type="primary"):
-    with st.spinner("Comparing shortages, programs, and teaching materials..."):
-        result = post(
-            "/api/v1/educator/gaps",
-            {
-                "topic": topic,
-                "topic_keywords": topic,
-                "county": county or None,
-                "state": "GA",
-                "limit": 20,
-            },
-        )
+    try:
+        with st.spinner("Comparing shortages, programs, and teaching materials..."):
+            result = post(
+                "/api/v1/educator/gaps",
+                {
+                    "topic": topic,
+                    "topic_keywords": topic,
+                    "county": county or None,
+                    "state": "GA",
+                    "limit": 20,
+                },
+            )
         st.session_state["gap_result"] = result
         st.session_state["gap_topic"] = topic
         st.session_state["gap_county"] = county
+    except ApiError as exc:
+        st.error(f"Couldn't find teaching gaps: {exc}")
 
 result = st.session_state.get("gap_result")
 if not result:

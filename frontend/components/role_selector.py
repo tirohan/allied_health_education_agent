@@ -1,6 +1,6 @@
 import streamlit as st
 
-from frontend.api_client import get
+from frontend.api_client import ApiError, get
 
 
 DEFAULT_ROLES = [
@@ -16,7 +16,8 @@ DEFAULT_ROLES = [
 def render_role_selector() -> str:
     try:
         roles = get("/api/v1/educator/roles").get("roles", DEFAULT_ROLES)
-    except Exception:
+    except ApiError:
+        st.caption("⚠️ Using default roles — couldn't reach the server.")
         roles = DEFAULT_ROLES
     labels = {role["id"]: role["label"] for role in roles}
     choice = st.selectbox(

@@ -3,12 +3,13 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.exceptions import ApiException
 
 from backend.app.api.routes import educator, health, index, mindmap, search, verify
+from backend.app.api.security import require_api_key
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.logging import configure_logging
 from backend.app.db.postgres import Postgres
@@ -48,9 +49,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state = AppState(settings)
     app.state.services = state
 
-    await state.postgres.connect()
-    logger.info("application_started", app_env=settings.app_env)
     try:
+        await state.postgres.connect()
+        logger.info("application_started", app_env=settings.app_env)
         yield
     finally:
         await state.postgres.close()
@@ -82,19 +83,30 @@ def create_app() -> FastAPI:
         structlog.contextvars.clear_contextvars()
         return response
 
-    @app.exception_handler(UnexpectedResponse)
-    async def qdrant_exception_handler(_request: Request, exc: UnexpectedResponse) -> JSONResponse:
+    @app.exception_handler(ApiException)
+    async def qdrant_exception_handler(_request: Request, exc: ApiException) -> JSONResponse:
+        # Covers both bad HTTP responses (UnexpectedResponse) and connection-level
+        # failures (ResponseHandlingException) when Qdrant is unreachable.
+        logger = structlog.get_logger(__name__)
+        logger.error("qdrant_request_failed", error=str(exc))
         return JSONResponse(
             status_code=502,
-            content={"detail": "Vector store request failed", "error": str(exc)},
+            content={"detail": "Vector store request failed"},
         )
 
+    @app.exception_handler(ValueError)
+    async def value_error_handler(_request: Request, exc: ValueError) -> JSONResponse:
+        # Services validate things like role strings by raising ValueError; surface
+        # that as a clean 422 instead of an unhandled 500.
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    auth_dependency = [Depends(require_api_key)]
     app.include_router(health.router)
-    app.include_router(search.router)
-    app.include_router(verify.router)
-    app.include_router(mindmap.router)
-    app.include_router(index.router)
-    app.include_router(educator.router)
+    app.include_router(search.router, dependencies=auth_dependency)
+    app.include_router(verify.router, dependencies=auth_dependency)
+    app.include_router(mindmap.router, dependencies=auth_dependency)
+    app.include_router(index.router, dependencies=auth_dependency)
+    app.include_router(educator.router, dependencies=auth_dependency)
     return app
 
 

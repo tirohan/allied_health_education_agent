@@ -107,7 +107,7 @@ class HybridSearch:
         fused = reciprocal_rank_fusion(
             vector_results,
             sql_results,
-            top_k=max(top_k * 3, top_k),
+            top_k=top_k * 3,
             alpha=0.30,
         )
         return teaching_rerank(
@@ -326,7 +326,7 @@ class HybridSearch:
             LIMIT $3
             """,
             query,
-            filters.get("state", "GA"),
+            filters.get("state"),
             top_k,
         )
         return [
@@ -341,7 +341,7 @@ class HybridSearch:
                     f"poverty={row.get('poverty_percentage')} "
                     f"uninsured={row.get('uninsured_percentage')}"
                 ),
-                score=float(row.get("rank") or 0.1),
+                score=float(row.get("rank") or 0.0),
                 sql_rank=rank,
                 payload=dict(row),
             )
@@ -441,8 +441,12 @@ def reciprocal_rank_fusion(
             by_source[key] = doc
         else:
             existing = by_source[key]
-            existing.sql_rank = doc.sql_rank or rank
-            existing.payload = {**doc.payload, **existing.payload}
+            by_source[key] = existing.model_copy(
+                update={
+                    "sql_rank": doc.sql_rank or rank,
+                    "payload": {**doc.payload, **existing.payload},
+                }
+            )
         scores[key] += (1.0 - alpha) * (1.0 / (k + (doc.sql_rank or rank)))
 
     fused = []
@@ -509,7 +513,7 @@ def teaching_rerank(
 def _qdrant_filter(filters: dict[str, Any]) -> models.Filter | None:
     conditions: list[models.FieldCondition] = []
     for key, value in filters.items():
-        if value is None or key in {"relevance_status", "source_platform"}:
+        if value is None:
             continue
         if isinstance(value, (bool, str, int)):
             conditions.append(models.FieldCondition(key=key, match=models.MatchValue(value=value)))

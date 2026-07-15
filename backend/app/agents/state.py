@@ -64,7 +64,7 @@ class RetrievedDoc(BaseModel):
     source_id: str
     title: str
     text: str
-    score: float = Field(ge=0.0)
+    score: float = Field(ge=-1.0)
     vector_rank: int | None = Field(default=None, ge=1)
     sql_rank: int | None = Field(default=None, ge=1)
     payload: dict[str, Any] = Field(default_factory=dict)

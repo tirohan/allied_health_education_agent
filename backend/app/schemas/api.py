@@ -79,7 +79,7 @@ class IndexRequest(BaseModel):
     collection: RetrievalCollection
     mode: str = Field(default="incremental", pattern="^(incremental|full)$")
     batch_size: int = Field(default=500, ge=1, le=2_000)
-    limit: int | None = Field(default=None, ge=1)
+    limit: int | None = Field(default=None, ge=1, le=50_000)
 
 
 class IndexResponse(BaseModel):

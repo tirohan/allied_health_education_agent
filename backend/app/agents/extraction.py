@@ -3,6 +3,7 @@ import re
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from backend.app.agents.state import (
     AgentStep,
@@ -128,14 +129,14 @@ def _deterministic_extract(state: MindMapState) -> tuple[list[Entity], list[Rela
             summary=doc.text[:500],
             source_table=doc.source_table,
             source_id=doc.source_id,
-            confidence=min(0.95, max(0.55, float(doc.score) if doc.score > 1 else float(doc.score) * 8 + 0.4)),
+            confidence=_confidence_from_score(doc.score),
             evidence_doc_ids=[doc.id],
         )
         if entity.entity_id not in {item.entity_id for item in entities}:
             entities.append(entity)
         relations.append(
             Relation(
-                relation_id=f"{relation_source}->{relation_target}:{relation_type.value}",
+                relation_id=f"{relation_source}:{relation_type.value}:{relation_target}",
                 source_entity_id=relation_source,
                 target_entity_id=relation_target,
                 relation_type=relation_type,
@@ -147,12 +148,27 @@ def _deterministic_extract(state: MindMapState) -> tuple[list[Entity], list[Rela
     return entities, relations
 
 
+def _confidence_from_score(score: float) -> float:
+    """Map a retrieval score onto a usable [0.55, 0.95] confidence band.
+
+    HybridSearch scores are normalized (fused/keyword/vector) and typically land
+    in roughly [0, 0.6] for good matches, so linearly spread that range across
+    the confidence band instead of saturating almost everything to the ceiling.
+    Raw/unnormalized scores (>1, e.g. an un-fused vector similarity) are outside
+    the expected range and are clamped to the ceiling directly.
+    """
+    value = float(score)
+    if value > 1:
+        return 0.95
+    return max(0.55, min(0.95, 0.55 + min(1.0, value / 0.6) * 0.40))
+
+
 async def _llm_extract(
     state: MindMapState,
     api_key: str,
     model: str,
 ) -> tuple[list[Entity], list[Relation]]:
-    from openai import AsyncOpenAI
+    from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 
     # Prefer highest-scoring docs; keep context small for latency.
     ranked_docs = sorted(
@@ -187,20 +203,28 @@ async def _llm_extract(
         f"Query: {state.get('refined_query') or state['query']}. "
         f"Documents: {json.dumps(payload)}"
     )
-    client = AsyncOpenAI(api_key=api_key)
-    response = await client.chat.completions.create(
-        model=model,
-        response_format={"type": "json_object"},
-        messages=[
-            {
-                "role": "system",
-                "content": "You extract grounded entities and relations as strict JSON.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.1,
-        max_tokens=1200,
+    client = AsyncOpenAI(api_key=api_key, timeout=30.0)
+    retryer = AsyncRetrying(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
+        reraise=True,
     )
+    async for attempt in retryer:
+        with attempt:
+            response = await client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You extract grounded entities and relations as strict JSON.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                max_tokens=1200,
+            )
     content = response.choices[0].message.content or "{}"
     data = json.loads(content)
     entities = [
@@ -260,8 +284,19 @@ def _merge_extractions(
     }
     for relation in llm_relations:
         relation_by_id[relation.relation_id] = relation
+
+    # A relation extracted independently by both paths can still end up with two
+    # different ids, so dedupe once more by its semantic identity and keep the
+    # higher-confidence instance.
+    deduped_by_triple: dict[tuple[str, str, str], Relation] = {}
+    for relation in relation_by_id.values():
+        triple = (relation.source_entity_id, relation.target_entity_id, relation.relation_type)
+        existing = deduped_by_triple.get(triple)
+        if existing is None or relation.confidence > existing.confidence:
+            deduped_by_triple[triple] = relation
+
     entity_ids = set(by_id.keys())
-    relations = _drop_dangling_relations(list(relation_by_id.values()), entity_ids)
+    relations = _drop_dangling_relations(list(deduped_by_triple.values()), entity_ids)
     return list(by_id.values()), relations
 
 
