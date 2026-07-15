@@ -163,6 +163,7 @@ class MindMapState(TypedDict, total=False):
     filters: dict[str, Any]
     max_nodes: int
     min_confidence: float
+    extraction_mode: str
     retrieved_docs: list[RetrievedDoc]
     extracted_entities: list[Entity]
     extracted_relations: list[Relation]

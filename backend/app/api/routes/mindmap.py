@@ -60,6 +60,7 @@ def _initial_state(body: MindMapRequest) -> MindMapState:
         "filters": body.filters,
         "max_nodes": body.max_nodes,
         "min_confidence": body.min_confidence,
+        "extraction_mode": body.extraction_mode,
         "retrieved_docs": [],
         "extracted_entities": [],
         "extracted_relations": [],

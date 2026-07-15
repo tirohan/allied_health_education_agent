@@ -25,6 +25,7 @@ class SearchRequest(BaseModel):
     )
     top_k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] = Field(default_factory=dict)
+    mode: str = Field(default="hybrid", pattern="^(hybrid|vector|keyword)$")
 
 
 class SearchResponse(BaseModel):
@@ -55,6 +56,10 @@ class MindMapRequest(BaseModel):
     )
     filters: dict[str, Any] = Field(default_factory=dict)
     stream: bool = False
+    extraction_mode: str = Field(
+        default="auto",
+        pattern="^(auto|llm|deterministic)$",
+    )
 
 
 class MindMapResponse(BaseModel):

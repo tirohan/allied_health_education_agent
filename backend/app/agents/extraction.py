@@ -30,9 +30,18 @@ async def extraction_node(
     configurable = (config or {}).get("configurable", {})
     services = configurable.get("services") if isinstance(configurable, dict) else None
     entities, relations = _deterministic_extract(state)
-
+    requested_mode = str(state.get("extraction_mode") or "auto").strip().lower()
     extraction_mode = "deterministic"
-    if services is not None and getattr(services, "settings", None) is not None:
+
+    use_llm = requested_mode in {"auto", "llm"}
+    if requested_mode == "deterministic":
+        use_llm = False
+
+    if (
+        use_llm
+        and services is not None
+        and getattr(services, "settings", None) is not None
+    ):
         api_key = services.settings.openai_api_key
         secret = api_key.get_secret_value().strip() if api_key is not None else ""
         if secret:
@@ -43,15 +52,21 @@ async def extraction_node(
                     services.settings.openai_model,
                 )
                 if llm_entities:
-                    entities, relations = _merge_extractions(
-                        entities,
-                        relations,
-                        llm_entities,
-                        llm_relations,
-                    )
-                    extraction_mode = "llm_structured"
+                    if requested_mode == "llm":
+                        entities, relations = llm_entities, llm_relations
+                        extraction_mode = "llm_structured"
+                    else:
+                        entities, relations = _merge_extractions(
+                            entities,
+                            relations,
+                            llm_entities,
+                            llm_relations,
+                        )
+                        extraction_mode = "llm_structured"
             except Exception as exc:  # noqa: BLE001 - fall back to deterministic path
                 extraction_mode = f"deterministic_fallback:{exc.__class__.__name__}"
+        elif requested_mode == "llm":
+            extraction_mode = "deterministic_fallback:MissingOpenAIKey"
 
     return {
         **state,

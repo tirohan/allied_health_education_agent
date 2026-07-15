@@ -15,5 +15,6 @@ async def search(request: Request, body: SearchRequest) -> SearchResponse:
         collections=body.collections,
         top_k=body.top_k,
         filters=body.filters,
+        mode=body.mode,
     )
     return SearchResponse(results=results, total=len(results))

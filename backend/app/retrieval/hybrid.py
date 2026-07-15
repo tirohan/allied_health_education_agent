@@ -78,20 +78,30 @@ class HybridSearch:
         collections: list[RetrievalCollection],
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
+        mode: str = "hybrid",
     ) -> list[RetrievedDoc]:
         filters = filters or {}
+        mode_normalized = (mode or "hybrid").strip().lower()
+        if mode_normalized not in {"hybrid", "vector", "keyword"}:
+            mode_normalized = "hybrid"
         vector_results: list[RetrievedDoc] = []
         sql_results: list[RetrievedDoc] = []
         # Keep representation across collections instead of letting one domain dominate.
         per_collection = max(3, (top_k + len(collections) - 1) // max(len(collections), 1))
         sql_query = keyword_tsquery(query)
         for collection in collections:
-            vector_results.extend(
-                await self._vector_search(query, collection, per_collection, filters)
-            )
-            sql_results.extend(
-                await self._sql_search(sql_query, collection, per_collection, filters)
-            )
+            if mode_normalized in {"hybrid", "vector"}:
+                vector_results.extend(
+                    await self._vector_search(query, collection, per_collection, filters)
+                )
+            if mode_normalized in {"hybrid", "keyword"}:
+                sql_results.extend(
+                    await self._sql_search(sql_query, collection, per_collection, filters)
+                )
+        if mode_normalized == "vector":
+            return sorted(vector_results, key=lambda doc: doc.score, reverse=True)[:top_k]
+        if mode_normalized == "keyword":
+            return sorted(sql_results, key=lambda doc: doc.score, reverse=True)[:top_k]
         return reciprocal_rank_fusion(vector_results, sql_results, top_k=top_k)
 
     async def _vector_search(
