@@ -3,6 +3,7 @@ import streamlit as st
 
 from frontend.api_client import ApiError, post
 from frontend.components.role_selector import render_role_selector
+from frontend.components.teaching_list import render_teaching_list_sidebar
 
 st.set_page_config(page_title="Find Teaching Materials", layout="wide")
 st.title("Find Teaching Materials")
@@ -26,6 +27,8 @@ with st.sidebar:
         format_func=lambda key: collection_labels[key],
     )
     top_k = st.slider("Number of results", 5, 40, 12)
+
+render_teaching_list_sidebar()
 
 query = st.text_input(
     "What do you want to teach or find?",
@@ -59,15 +62,32 @@ elif response:
         "communities": "County context",
         "simulation_cases": "Simulation case",
     }
+    results = response.get("results", [])
+    total = len(results)
+
+    def _match_strength(rank: int) -> str:
+        # Results already come back sorted by relevance, so read strength from
+        # rank within this result set rather than a raw score -- the raw score's
+        # scale varies by search mode (vector similarity vs. keyword rank vs.
+        # fused hybrid score) and isn't meaningful to a non-technical reader.
+        if total <= 1:
+            return "🟢 Strong match"
+        fraction = rank / total
+        if fraction < 1 / 3:
+            return "🟢 Strong match"
+        if fraction < 2 / 3:
+            return "🟡 Good match"
+        return "⚪ Possible match"
+
     rows = [
         {
             "What it is": type_map.get(result["collection"], result["collection"]),
             "Title": result["title"],
-            "Relevance score": round(float(result["score"]), 3),
+            "Match strength": _match_strength(rank),
             "Where it came from": result["source_table"].replace("_", " "),
             "What to do next": "Open Curriculum Builder or Save to teaching list",
         }
-        for result in response.get("results", [])
+        for rank, result in enumerate(results)
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
     st.info(

@@ -2,6 +2,7 @@ import streamlit as st
 
 from frontend.components.guided_starters import render_guided_starters
 from frontend.components.role_selector import render_role_selector
+from frontend.components.teaching_list import render_teaching_list_sidebar
 
 st.set_page_config(
     page_title="Allied Health Teaching Intelligence",
@@ -26,6 +27,8 @@ with st.sidebar:
     )
     st.session_state["advanced_mode"] = advanced_mode
 
+render_teaching_list_sidebar()
+
 st.markdown(
     """
     ### What can you do here?
@@ -34,6 +37,22 @@ st.markdown(
     3. Build a curriculum outline, find local gaps, and export a teaching pack.
     """
 )
+
+with st.expander("Why should I trust what this tool shows me?", expanded=True):
+    st.markdown(
+        """
+Every item on your teaching map is checked against our source database before you
+ever see it -- this isn't just an AI guessing:
+
+- **✅ Confirmed** — directly matched to a real record in our database
+- **🟠 AI-inferred** — a likely connection the AI made, not yet directly confirmed
+- **⚪ Unverified** — not yet checked, so treat it with extra caution
+- Anything that fails verification is automatically left off the map
+
+You'll see these labels (and a full legend) on every teaching map, and a
+trust summary on the **Evidence and Review** page.
+"""
+    )
 
 starter = render_guided_starters()
 if starter:
@@ -53,8 +72,3 @@ st.markdown(
     - **Teaching Pack** — export a ready-to-share packet
     """
 )
-
-if st.session_state.get("teaching_list"):
-    st.subheader("Your teaching list")
-    for item in st.session_state["teaching_list"]:
-        st.write(f"- {item.get('what_it_is')}: {item.get('label')}")

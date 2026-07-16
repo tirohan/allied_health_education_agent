@@ -2,8 +2,9 @@ import json
 
 import streamlit as st
 
-from frontend.api_client import ApiError, post, post_bytes
+from frontend.api_client import ApiError, build_mindmap_with_progress, post, post_bytes, safe_call
 from frontend.components.role_selector import render_role_selector
+from frontend.components.teaching_list import render_teaching_list_sidebar
 
 st.set_page_config(page_title="Teaching Pack", layout="wide")
 st.title("Teaching Pack Export")
@@ -15,6 +16,8 @@ st.caption(
 with st.sidebar:
     render_role_selector()
     export_format = st.selectbox("Export format", ["docx", "markdown", "json"])
+
+render_teaching_list_sidebar()
 
 query = st.text_area(
     "Pack focus",
@@ -30,26 +33,24 @@ if not response:
     st.warning("Build a teaching map first so the pack has connected materials.")
     if st.button("Generate teaching map", type="primary"):
         try:
-            with st.spinner("Gathering materials..."):
-                response = post(
-                    "/api/v1/mindmap",
-                    {
-                        "query": query,
-                        "max_nodes": 30,
-                        "min_confidence": 0.45,
-                        "collections": st.session_state.get(
-                            "planning_collections",
-                            [
-                                "papers",
-                                "resources",
-                                "programs",
-                                "communities",
-                                "simulation_cases",
-                            ],
-                        ),
-                        "filters": st.session_state.get("planning_filters", {"state": "GA"}),
-                    },
-                )
+            response = build_mindmap_with_progress(
+                {
+                    "query": query,
+                    "max_nodes": 30,
+                    "min_confidence": 0.45,
+                    "collections": st.session_state.get(
+                        "planning_collections",
+                        [
+                            "papers",
+                            "resources",
+                            "programs",
+                            "communities",
+                            "simulation_cases",
+                        ],
+                    ),
+                    "filters": st.session_state.get("planning_filters", {"state": "GA"}),
+                }
+            )
             st.session_state["mindmap_response"] = response
             st.session_state["planning_query"] = query
             st.rerun()
@@ -58,20 +59,18 @@ if not response:
     st.stop()
 
 if st.button("Build teaching pack", type="primary"):
-    try:
-        with st.spinner("Assembling teaching pack..."):
-            pack = post(
-                "/api/v1/educator/teaching-pack",
-                {
-                    "query": query,
-                    "role": st.session_state.get("educator_role"),
-                    "graph": response["graph"],
-                    "format": "json",
-                },
-            )
-        st.session_state["teaching_pack"] = pack
-    except ApiError as exc:
-        st.error(f"Couldn't build the teaching pack: {exc}")
+    pack = safe_call(
+        "Assembling teaching pack...",
+        post,
+        "/api/v1/educator/teaching-pack",
+        {
+            "query": query,
+            "role": st.session_state.get("educator_role"),
+            "graph": response["graph"],
+            "format": "json",
+        },
+    )
+    st.session_state["teaching_pack"] = pack
 
 pack = st.session_state.get("teaching_pack")
 if not pack:

@@ -1,10 +1,11 @@
 import streamlit as st
 
-from frontend.api_client import ApiError, post
+from frontend.api_client import ApiError, build_mindmap_with_progress, post, safe_call
 from frontend.components.educator_panel import render_educator_node_card, render_plain_evidence_list
-from frontend.components.graph_viz import render_mindmap
+from frontend.components.graph_viz import render_mindmap, render_trust_legend
 from frontend.components.guided_starters import render_guided_starters
 from frontend.components.role_selector import render_role_selector
+from frontend.components.teaching_list import render_teaching_list_sidebar
 
 st.set_page_config(page_title="Teaching Connections", layout="wide")
 st.title("Teaching Connections")
@@ -42,6 +43,8 @@ with st.sidebar:
     )
     max_nodes = st.slider("How many items to show", min_value=8, max_value=60, value=30)
 
+render_teaching_list_sidebar()
+
 starter = render_guided_starters()
 if starter:
     st.info(
@@ -59,25 +62,25 @@ query = st.text_area(
 
 if st.button("Build teaching map", type="primary"):
     try:
-        with st.spinner("Connecting topics, materials, programs, and community context..."):
-            response = post(
-                "/api/v1/mindmap",
-                {
-                    "query": query,
-                    "max_nodes": max_nodes,
-                    "min_confidence": 0.45,
-                    "collections": collections,
-                    "filters": st.session_state.get("planning_filters", {"state": "GA"}),
-                },
-            )
-            enrich = post(
-                "/api/v1/educator/enrich",
-                {
-                    "query": query,
-                    "role": role,
-                    "graph": response["graph"],
-                },
-            )
+        response = build_mindmap_with_progress(
+            {
+                "query": query,
+                "max_nodes": max_nodes,
+                "min_confidence": 0.45,
+                "collections": collections,
+                "filters": st.session_state.get("planning_filters", {"state": "GA"}),
+            }
+        )
+        enrich = safe_call(
+            "Explaining what you found...",
+            post,
+            "/api/v1/educator/enrich",
+            {
+                "query": query,
+                "role": role,
+                "graph": response["graph"],
+            },
+        )
         st.session_state["mindmap_response"] = response
         st.session_state["educator_cards"] = enrich.get("cards", [])
         st.session_state["planning_query"] = query
@@ -92,20 +95,22 @@ if response:
         f"Found {len(response['graph'].get('nodes', []))} connected teaching items "
         f"from {response.get('total_sources_queried', 0)} sources."
     )
+    render_trust_legend(response["graph"])
     left, right = st.columns([0.68, 0.32])
     with left:
         selected = render_mindmap(response["graph"])
-        if selected:
-            st.session_state["selected_node_id"] = selected
         selected_node_id = st.session_state.get("selected_node_id")
-        # Fallback selector when graph click is unavailable.
+        if selected:
+            selected_node_id = selected
+            st.session_state["selected_node_id"] = selected_node_id
         labels = {
             node["id"]: f"{node.get('entity_type')}: {node.get('label')}"
             for node in response["graph"].get("nodes", [])
         }
         if labels:
+            st.caption("Tip: you can also click directly on a bubble in the map above.")
             selected_node_id = st.selectbox(
-                "Or choose an item to inspect",
+                "Choose an item to inspect",
                 options=list(labels.keys()),
                 format_func=lambda key: labels[key],
                 index=list(labels.keys()).index(selected_node_id)

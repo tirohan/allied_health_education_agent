@@ -71,23 +71,113 @@ async def generate_mindmap(request: Request, body: MindMapRequest) -> MindMapRes
     return response
 
 
-@router.get("/mindmap/stream")
-async def stream_mindmap(
-    request: Request,
-    query: str,
-    max_nodes: int = 50,
-) -> EventSourceResponse:
-    body = MindMapRequest(query=query, max_nodes=max_nodes)
+_STEP_LABELS = {
+    "orchestrator": "Understanding your question",
+    "research": "Searching sources",
+    "extraction": "Extracting connections",
+    "verification": "Verifying evidence against the source database",
+    "mindmap": "Building your teaching map",
+}
+
+
+@router.post("/mindmap/stream")
+async def stream_mindmap(request: Request, body: MindMapRequest) -> EventSourceResponse:
+    """Same pipeline as POST /mindmap, but emits a step event per agent stage so the
+    UI can show real progress instead of a single opaque spinner, then a final
+    result event with the same payload shape as the non-streaming endpoint."""
+    start = time.perf_counter()
+    services = request.app.state.services
+    cache_key = _cache_key(body)
 
     async def events() -> AsyncIterator[dict[str, str]]:
+        try:
+            cached_json = await services.redis.get_json(cache_key)
+        except Exception as exc:  # noqa: BLE001 - a cache outage must not break the request
+            cached_json = None
+            logger.warning("mindmap_cache_read_failed", error=str(exc))
+
+        if cached_json is not None:
+            try:
+                cached_response = MindMapResponse.model_validate_json(cached_json)
+                cached_response.cached = True
+                yield {
+                    "event": "step",
+                    "data": json.dumps({"agent": "cache", "message": "Loaded from cache"}),
+                }
+                yield {"event": "result", "data": cached_response.model_dump_json()}
+                return
+            except Exception as exc:  # noqa: BLE001 - fall through to a fresh computation
+                logger.warning("mindmap_cache_deserialize_failed", error=str(exc))
+
         state = _initial_state(body)
-        async for event in compiled_graph.astream(
+        final_state: MindMapState = state
+        async for update in compiled_graph.astream(
             state,
-            config={"configurable": {"services": request.app.state.services}},
+            config={"configurable": {"services": services}},
             stream_mode="updates",
         ):
-            yield {"event": "agent_update", "data": json.dumps(_jsonable(event))}
-        yield {"event": "complete", "data": "{}"}
+            for node_name, node_state in update.items():
+                # Once state["error"] is set, every remaining node short-circuits
+                # and returns its unchanged input state (see graph.py's guards) --
+                # it has nothing new to report, so skip it rather than re-emitting
+                # a stale message from a prior node.
+                if final_state.get("error"):
+                    final_state = {**final_state, **node_state}
+                    continue
+                final_state = {**final_state, **node_state}
+                if node_state.get("error"):
+                    message = f"Ran into a problem: {node_state['error']}"
+                else:
+                    trace = node_state.get("agent_trace") or []
+                    message = (
+                        trace[-1].message if trace else _STEP_LABELS.get(node_name, node_name)
+                    )
+                yield {
+                    "event": "step",
+                    "data": json.dumps(
+                        {
+                            "agent": node_name,
+                            "label": _STEP_LABELS.get(node_name, node_name.title()),
+                            "message": message,
+                        }
+                    ),
+                }
+
+        if final_state.get("error"):
+            logger.error("mindmap_pipeline_failed", error=final_state["error"])
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {"detail": f"Mind map generation failed: {final_state['error']}"}
+                ),
+            }
+            return
+
+        graph = final_state.get("mindmap_graph")
+        if graph is None:
+            yield {
+                "event": "error",
+                "data": json.dumps({"detail": "Mind map pipeline completed without a graph"}),
+            }
+            return
+
+        response = MindMapResponse(
+            graph=graph,
+            citations=final_state.get("citations", []),
+            agent_trace=final_state.get("agent_trace", []),
+            total_sources_queried=len(final_state.get("retrieved_docs", [])),
+            processing_time_ms=int((time.perf_counter() - start) * 1000),
+            cached=False,
+        )
+
+        try:
+            await services.redis.set_json(
+                cache_key, response.model_dump_json(), services.settings.cache_ttl_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 - a cache outage must not break the request
+            logger.warning("mindmap_cache_write_failed", error=str(exc))
+
+        yield {"event": "result", "data": response.model_dump_json()}
 
     return EventSourceResponse(events())
 
@@ -112,13 +202,3 @@ def _initial_state(body: MindMapRequest) -> MindMapState:
         "agent_trace": [],
         "error": None,
     }
-
-
-def _jsonable(value):
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {key: _jsonable(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_jsonable(item) for item in value]
-    return value

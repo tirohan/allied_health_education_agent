@@ -4,6 +4,7 @@ import streamlit as st
 from frontend.api_client import ApiError, post, safe_call
 from frontend.components.educator_panel import render_plain_evidence_list
 from frontend.components.role_selector import render_role_selector
+from frontend.components.teaching_list import render_teaching_list_sidebar
 
 st.set_page_config(page_title="Evidence and Review", layout="wide")
 st.title("Evidence and Review")
@@ -18,6 +19,8 @@ with st.sidebar:
         value=st.session_state.get("advanced_mode", False),
     )
     st.session_state["advanced_mode"] = advanced_mode
+
+render_teaching_list_sidebar()
 
 response = st.session_state.get("mindmap_response")
 cards = st.session_state.get("educator_cards", [])
@@ -44,6 +47,21 @@ if not cards:
     except ApiError as exc:
         st.error(f"Couldn't load evidence: {exc}")
         st.stop()
+
+if cards:
+    counts = {"CONFIRMED": 0, "INFERRED": 0, "UNVERIFIED": 0}
+    for card in cards:
+        status = card.get("verification_status", "UNVERIFIED")
+        counts[status] = counts.get(status, 0) + 1
+    st.markdown("**How trustworthy is this map, at a glance?**")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("✅ Confirmed", counts["CONFIRMED"], help="Directly checked against our source database.")
+    m2.metric("🟠 AI-inferred", counts["INFERRED"], help="A likely connection the AI made that isn't directly confirmed yet.")
+    m3.metric("⚪ Unverified", counts["UNVERIFIED"], help="Not yet checked -- treat with extra caution.")
+    st.caption(
+        "Items that failed verification never make it into your map, so everything "
+        "below has at least some evidence behind it."
+    )
 
 render_plain_evidence_list(cards)
 
