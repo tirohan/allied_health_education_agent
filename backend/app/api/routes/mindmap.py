@@ -77,6 +77,7 @@ _STEP_LABELS = {
     "extraction": "Extracting connections",
     "verification": "Verifying evidence against the source database",
     "mindmap": "Building your teaching map",
+    "critic": "Double-checking uncertain connections",
 }
 
 

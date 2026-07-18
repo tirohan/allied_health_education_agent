@@ -5,6 +5,7 @@ import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
+from backend.app.agents.critic import critic_node
 from backend.app.agents.extraction import extraction_node
 from backend.app.agents.mindmap import mindmap_node
 from backend.app.agents.orchestrator import orchestrator_node
@@ -53,13 +54,15 @@ def build_graph():
     graph.add_node("extraction", _guard_with_config("extraction", extraction_node))
     graph.add_node("verification", _guard_with_config("verification", verification_node))
     graph.add_node("mindmap", _guard_state_only("mindmap", mindmap_node))
+    graph.add_node("critic", _guard_with_config("critic", critic_node))
 
     graph.set_entry_point("orchestrator")
     graph.add_edge("orchestrator", "research")
     graph.add_edge("research", "extraction")
     graph.add_edge("extraction", "verification")
     graph.add_edge("verification", "mindmap")
-    graph.add_edge("mindmap", END)
+    graph.add_edge("mindmap", "critic")
+    graph.add_edge("critic", END)
     return graph.compile()
 
 

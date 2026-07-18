@@ -33,6 +33,7 @@ STATUS_COLORS: dict[VerificationStatus, str] = {
     VerificationStatus.CONFIRMED: "#50C878",
     VerificationStatus.INFERRED: "#F5A623",
     VerificationStatus.UNVERIFIED: "#95A5A6",
+    VerificationStatus.CONTESTED: "#8E44AD",
     VerificationStatus.REFUTED: "#E74C3C",
 }
 
@@ -199,7 +200,9 @@ def _edge_from_relation(
         label=relation.relation_type,
         weight=max(0.1, min(5.0, confidence * 5.0)),
         color=STATUS_COLORS[status],
-        dashes=status in {VerificationStatus.INFERRED, VerificationStatus.UNVERIFIED},
+        dashes=status
+        in {VerificationStatus.INFERRED, VerificationStatus.UNVERIFIED, VerificationStatus.CONTESTED},
+        relation_id=relation.relation_id,
     )
 
 

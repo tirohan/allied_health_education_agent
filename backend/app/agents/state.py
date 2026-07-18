@@ -37,6 +37,7 @@ class VerificationStatus(StrEnum):
     CONFIRMED = "CONFIRMED"
     INFERRED = "INFERRED"
     UNVERIFIED = "UNVERIFIED"
+    CONTESTED = "CONTESTED"
     REFUTED = "REFUTED"
 
 
@@ -109,6 +110,7 @@ class VerificationResult(BaseModel):
         "text_match",
         "rag_rerank",
         "not_applicable",
+        "faculty_review",
     ]
 
 
@@ -138,6 +140,8 @@ class MindMapEdge(BaseModel):
     weight: float = Field(ge=0.1, le=5.0)
     color: str
     dashes: bool = False
+    relation_id: str | None = None
+    note: str | None = None
 
 
 class MindMapGraph(BaseModel):

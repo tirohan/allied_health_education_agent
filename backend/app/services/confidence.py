@@ -5,6 +5,7 @@ VERIFICATION_MULTIPLIER: dict[VerificationStatus, float] = {
     VerificationStatus.CONFIRMED: 1.0,
     VerificationStatus.INFERRED: 0.65,
     VerificationStatus.UNVERIFIED: 0.30,
+    VerificationStatus.CONTESTED: 0.20,
     VerificationStatus.REFUTED: 0.0,
 }
 

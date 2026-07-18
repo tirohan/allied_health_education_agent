@@ -5,7 +5,7 @@ from streamlit_agraph import Config, Edge, Node, agraph
 
 # Mirrors backend/app/agents/mindmap.py ENTITY_COLORS -- keep these two in sync
 # so the legend always matches what's actually drawn.
-_ENTITY_LEGEND: dict[str, tuple[str, str]] = {
+ENTITY_LEGEND: dict[str, tuple[str, str]] = {
     "Topic": ("Topic", "#4A90D9"),
     "Paper": ("Research paper", "#50C878"),
     "Resource": ("Teaching resource", "#F5A623"),
@@ -45,7 +45,7 @@ def render_trust_legend(graph_data: dict[str, Any] | None = None) -> None:
         st.markdown("**Bubble color = what kind of item it is**")
         entries = [
             entry
-            for key, entry in _ENTITY_LEGEND.items()
+            for key, entry in ENTITY_LEGEND.items()
             if present_types is None or key in present_types
         ]
         st.markdown(
@@ -57,7 +57,12 @@ def render_trust_legend(graph_data: dict[str, Any] | None = None) -> None:
         st.markdown(
             _swatch("#50C878", "Solid green — confirmed against our source database")
             + _swatch("#F5A623", "Dashed orange — AI-inferred, not yet directly confirmed")
-            + _swatch("#95A5A6", "Dashed gray — not yet verified"),
+            + _swatch("#95A5A6", "Dashed gray — not yet verified")
+            + _swatch(
+                "#8E44AD",
+                "Dashed purple — flagged as contested: double-checked and the "
+                "evidence doesn't clearly support this",
+            ),
             unsafe_allow_html=True,
         )
         st.caption(
@@ -85,6 +90,7 @@ def render_mindmap(graph_data: dict[str, Any]) -> str | None:
             color=edge["color"],
             dashes=edge["dashes"],
             width=edge["weight"],
+            title=edge.get("note") or edge["label"],
         )
         for edge in graph_data.get("edges", [])
     ]
