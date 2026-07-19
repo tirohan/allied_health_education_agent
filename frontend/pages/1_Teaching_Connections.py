@@ -87,6 +87,7 @@ if st.button("Build teaching map", type="primary"):
         st.session_state["educator_cards"] = enrich.get("cards", [])
         st.session_state["planning_query"] = query
         st.session_state["show_all_cards"] = False
+        st.session_state["map_chat_history"] = []
     except ApiError as exc:
         st.error(f"Couldn't build the teaching map: {exc}")
 
@@ -144,6 +145,44 @@ if response:
                 f"You selected **{labels.get(selected, selected)}**. "
                 "Find it above in the list, or expand \"Show all items\" if it's not visible yet."
             )
+
+    st.divider()
+    st.subheader("Ask about this map")
+    st.caption("Answers are grounded only in the items shown above.")
+    chat_history = st.session_state.setdefault("map_chat_history", [])
+    label_by_id = {card["node_id"]: card["label"] for card in cards}
+
+    for message in chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+            if message.get("cited_node_ids"):
+                sources = ", ".join(
+                    label_by_id.get(node_id, node_id) for node_id in message["cited_node_ids"]
+                )
+                st.caption(f"Sources: {sources}")
+
+    if question := st.chat_input("Ask a follow-up question about this map..."):
+        prior_history = chat_history[-6:]
+        result = safe_call(
+            "Thinking...",
+            post,
+            "/api/v1/educator/chat",
+            {
+                "query": question,
+                "graph": response["graph"],
+                "history": prior_history,
+                "role": role,
+            },
+        )
+        chat_history.append({"role": "user", "content": question})
+        chat_history.append(
+            {
+                "role": "assistant",
+                "content": result["answer"],
+                "cited_node_ids": result.get("cited_node_ids", []),
+            }
+        )
+        st.rerun()
 
     if advanced_mode:
         with st.expander("Advanced agent steps"):

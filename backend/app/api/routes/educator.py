@@ -2,12 +2,15 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from backend.app.schemas.api import (
+    ChatRequest,
+    ChatResponse,
     CurriculumRequest,
     EducatorEnrichRequest,
     FacultyReviewRequest,
     GapFinderRequest,
     TeachingPackRequest,
 )
+from backend.app.services.chat import answer_question
 from backend.app.services.educator import (
     GUIDED_STARTERS,
     build_curriculum_outline,
@@ -91,6 +94,21 @@ async def teaching_pack(body: TeachingPackRequest):
             "Content-Disposition": 'attachment; filename="teaching_pack.docx"'
         },
     )
+
+
+@router.post("/chat")
+async def chat(request: Request, body: ChatRequest) -> ChatResponse:
+    settings = request.app.state.services.settings
+    api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else ""
+    result = await answer_question(
+        body.graph,
+        body.query,
+        [message.model_dump() for message in body.history],
+        body.role,
+        api_key,
+        settings.openai_model,
+    )
+    return ChatResponse(**result)
 
 
 @router.post("/review")

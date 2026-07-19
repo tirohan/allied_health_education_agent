@@ -12,6 +12,7 @@ from backend.app.agents.state import (
     VerificationStatus,
 )
 from backend.app.services.confidence import apply_verification_multiplier
+from backend.app.services.llm_json import call_openai_json
 
 logger = structlog.get_logger(__name__)
 
@@ -163,9 +164,6 @@ async def _critique(
     model: str,
     api_key: str,
 ) -> dict[str, dict[str, str]]:
-    from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
-    from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
-
     payload = [
         {
             "index": index,
@@ -187,30 +185,14 @@ async def _critique(
         f"Claims: {json.dumps(payload)}"
     )
 
-    client = AsyncOpenAI(api_key=api_key, timeout=30.0)
-    retryer = AsyncRetrying(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
-        retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
-        reraise=True,
+    data = await call_openai_json(
+        api_key=api_key,
+        model=model,
+        system_prompt="You are a careful, conservative fact-checker. Reply as strict JSON.",
+        user_prompt=prompt,
+        temperature=0.0,
+        max_tokens=800,
     )
-    async for attempt in retryer:
-        with attempt:
-            response = await client.chat.completions.create(
-                model=model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a careful, conservative fact-checker. Reply as strict JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-                max_tokens=800,
-            )
-    content = response.choices[0].message.content or "{}"
-    data = json.loads(content)
 
     verdicts_by_id: dict[str, dict[str, str]] = {}
     for item in data.get("verdicts", []):

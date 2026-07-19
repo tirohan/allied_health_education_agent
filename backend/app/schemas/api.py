@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -123,3 +123,21 @@ class FacultyReviewRequest(BaseModel):
     decision: str = Field(pattern="^(Useful|Not relevant|Needs review)$")
     reviewer: str = "faculty_user"
     notes: str | None = None
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatRequest(BaseModel):
+    query: str = Field(min_length=2)
+    graph: dict[str, Any]
+    history: list[ChatMessage] = Field(default_factory=list, max_length=12)
+    role: str | None = None
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    cited_node_ids: list[str]
+    grounded: bool

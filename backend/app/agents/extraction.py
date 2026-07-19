@@ -3,7 +3,6 @@ import re
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from backend.app.agents.state import (
     AgentStep,
@@ -14,6 +13,7 @@ from backend.app.agents.state import (
     RelationType,
     RetrievalCollection,
 )
+from backend.app.services.llm_json import call_openai_json
 
 COLLECTION_ENTITY: dict[RetrievalCollection, tuple[EntityType, RelationType]] = {
     RetrievalCollection.PAPERS: (EntityType.PAPER, RelationType.SUPPORTS),
@@ -168,8 +168,6 @@ async def _llm_extract(
     api_key: str,
     model: str,
 ) -> tuple[list[Entity], list[Relation]]:
-    from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
-
     # Prefer highest-scoring docs; keep context small for latency.
     ranked_docs = sorted(
         state.get("retrieved_docs", []),
@@ -203,30 +201,14 @@ async def _llm_extract(
         f"Query: {state.get('refined_query') or state['query']}. "
         f"Documents: {json.dumps(payload)}"
     )
-    client = AsyncOpenAI(api_key=api_key, timeout=30.0)
-    retryer = AsyncRetrying(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
-        retry=retry_if_exception_type((RateLimitError, APIConnectionError, APITimeoutError)),
-        reraise=True,
+    data = await call_openai_json(
+        api_key=api_key,
+        model=model,
+        system_prompt="You extract grounded entities and relations as strict JSON.",
+        user_prompt=prompt,
+        temperature=0.1,
+        max_tokens=1200,
     )
-    async for attempt in retryer:
-        with attempt:
-            response = await client.chat.completions.create(
-                model=model,
-                response_format={"type": "json_object"},
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You extract grounded entities and relations as strict JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                max_tokens=1200,
-            )
-    content = response.choices[0].message.content or "{}"
-    data = json.loads(content)
     entities = [
         entity
         for item in data.get("entities", [])
