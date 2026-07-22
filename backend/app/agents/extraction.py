@@ -187,6 +187,8 @@ async def _llm_extract(
     ]
     allowed_entity_types = ", ".join(item.value for item in EntityType)
     allowed_relation_types = ", ".join(item.value for item in RelationType)
+    query_text = state.get("refined_query") or state["query"]
+    topic_id = _topic_id_for_query(query_text)
     prompt = (
         "Extract entities and relations for an allied health education mind map. "
         "Return JSON with keys entities and relations. "
@@ -196,9 +198,16 @@ async def _llm_extract(
         "relation_type, evidence_text, confidence. "
         f"entity_type must be one of: {allowed_entity_types}. "
         f"relation_type must be one of: {allowed_relation_types}. "
-        "Only use source_table and source_id values from the provided documents. "
-        "Include a Topic entity for the query and link documents to it. "
-        f"Query: {state.get('refined_query') or state['query']}. "
+        "Only use source_table and source_id values from the provided documents, "
+        "with one required exception: include exactly one Topic entity for the "
+        f'query itself using entity_id="query_root", entity_type="Topic", '
+        f'source_table="topic_modules", source_id="{topic_id}" -- do not leave '
+        "source_table or source_id null or invent different values for this "
+        'entity. Link relevant documents to it with relations whose '
+        'target_entity_id is "query_root" (never leave a relation pointing at a '
+        "Topic entity you did not include with those exact fields, since it will "
+        "be dropped as unverifiable and take its relations with it). "
+        f"Query: {query_text}. "
         f"Documents: {json.dumps(payload)}"
     )
     data = await call_openai_json(
