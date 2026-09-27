@@ -400,3 +400,162 @@ async def test_apply_faculty_overrides_refutes_not_relevant_items() -> None:
     updated = await _apply_faculty_overrides(db, [original], [entity])  # type: ignore[arg-type]
     assert updated[0].verification_status == VerificationStatus.REFUTED
     assert updated[0].verification_method == "faculty_review"
+
+
+def test_topic_overlap_keeps_generic_words_on_shorter_side() -> None:
+    assert _topic_overlap("Public relations", "Public health") is False
+    assert _topic_overlap("Public health", "Public health nursing") is True
+
+
+def _paper_topic(pid: str, label: str) -> tuple[Entity, Entity, Relation]:
+    paper = Entity(entity_id=f"paper:{pid}", entity_type=EntityType.PAPER, label="p",
+                   source_table="research_papers", source_id=pid, confidence=0.8)
+    topic = Entity(entity_id="t", entity_type=EntityType.TOPIC, label=label,
+                   source_table="topic_modules", source_id="not_a_tag", confidence=0.8)
+    rel = Relation(relation_id=f"r:{pid}", source_entity_id=paper.entity_id, target_entity_id="t",
+                   relation_type=RelationType.SUPPORTS, confidence=0.7)
+    return paper, topic, rel
+
+
+@pytest.mark.asyncio
+async def test_verify_supports_exact_invalid_mapping_not_resurrected_by_loose_matches() -> None:
+    paper, topic, rel = _paper_topic("W9", "Public relations")
+    db = QueuedPostgres(
+        fetchrow_results=[None],
+        fetch_results=[[
+            {"topic_name": "Public relations", "topic_validation_status": "reviewed_invalid"},
+            {"topic_name": "Public relations and outreach", "topic_validation_status": "unreviewed"},
+            {"topic_name": "Public health", "topic_validation_status": "unreviewed"},
+        ]],
+    )
+    result = await verify_relation(db, rel, _entities(paper, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.UNVERIFIED
+
+
+@pytest.mark.asyncio
+async def test_verify_supports_exact_invalid_blocks_confirmation_from_valid_duplicate() -> None:
+    paper, topic, rel = _paper_topic("W10", "Teamwork")
+    db = QueuedPostgres(
+        fetchrow_results=[None],
+        fetch_results=[[
+            {"topic_name": "Teamwork", "topic_validation_status": "reviewed_valid"},
+            {"topic_name": "Teamwork", "topic_validation_status": "reviewed_invalid"},
+        ]],
+    )
+    result = await verify_relation(db, rel, _entities(paper, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.UNVERIFIED
+
+
+def _program_institution(unitid: str) -> tuple[Entity, Entity, Relation]:
+    prog = Entity(entity_id="program:P1", entity_type=EntityType.PROGRAM, label="p",
+                  source_table="programs", source_id="P1", confidence=0.8)
+    inst = Entity(entity_id=f"institution:{unitid}", entity_type=EntityType.INSTITUTION, label="i",
+                  source_table="institutions", source_id=unitid, confidence=0.8)
+    rel = Relation(relation_id="r:off", source_entity_id=prog.entity_id, target_entity_id=inst.entity_id,
+                   relation_type=RelationType.OFFERED_AT, confidence=0.7)
+    return prog, inst, rel
+
+
+@pytest.mark.asyncio
+async def test_verify_offered_at_refuted_when_program_is_at_other_institution() -> None:
+    prog, inst, rel = _program_institution("111")
+    db = QueuedPostgres(fetchrow_results=[None, {"unitid": 222}])
+    result = await verify_relation(db, rel, _entities(prog, inst))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.REFUTED
+
+
+@pytest.mark.asyncio
+async def test_verify_offered_at_unverified_when_program_has_no_unitid() -> None:
+    prog, inst, rel = _program_institution("111")
+    db = QueuedPostgres(fetchrow_results=[None, None])
+    result = await verify_relation(db, rel, _entities(prog, inst))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.UNVERIFIED
+
+
+@pytest.mark.asyncio
+async def test_verify_offered_at_confirmed_when_junction_matches() -> None:
+    prog, inst, rel = _program_institution("111")
+    db = QueuedPostgres(fetchrow_results=[{"program_id": "P1", "unitid": 111}])
+    result = await verify_relation(db, rel, _entities(prog, inst))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.CONFIRMED
+
+
+def _resource_topic(rid: str, title: str) -> tuple[Entity, Entity, Relation]:
+    resource = Entity(entity_id=f"resource:{rid}", entity_type=EntityType.RESOURCE, label=title,
+                      source_table="resources", source_id=rid, confidence=0.8)
+    topic = Entity(entity_id="query_root", entity_type=EntityType.TOPIC, label="q",
+                   source_table="topic_modules", source_id="opioid_substance_use", confidence=0.8)
+    rel = Relation(relation_id=f"r:{rid}", source_entity_id=resource.entity_id, target_entity_id="query_root",
+                   relation_type=RelationType.MAPPED_TO, confidence=0.7)
+    return resource, topic, rel
+
+
+@pytest.mark.asyncio
+async def test_verify_mapped_to_confirmed_via_junction() -> None:
+    resource, topic, rel = _resource_topic("r1", "x")
+    db = QueuedPostgres(fetchrow_results=[{"resource_id": "r1", "topic_tag": "opioid_substance_use",
+                                           "topic_source": "manual"}])
+    result = await verify_relation(db, rel, _entities(resource, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_verify_mapped_to_inferred_via_text_fallback_when_no_junction_row() -> None:
+    resource, topic, rel = _resource_topic("r2", "Opioid Overdose Toolkit")
+    db = QueuedPostgres(fetchrow_results=[
+        None,  # no resource_topics row
+        {"topic_label": "Opioid and Substance Use Education"},
+        {"title": "Opioid Overdose Toolkit", "description": None,
+         "health_education_domain": None, "clinical_public_health_domain": None},
+    ])
+    result = await verify_relation(db, rel, _entities(resource, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.INFERRED
+
+
+@pytest.mark.asyncio
+async def test_verify_mapped_to_unverified_when_no_junction_and_no_text_match() -> None:
+    resource, topic, rel = _resource_topic("r3", "Unrelated Widget Report")
+    db = QueuedPostgres(fetchrow_results=[
+        None,
+        {"topic_label": "Opioid and Substance Use Education"},
+        {"title": "Unrelated Widget Report", "description": None,
+         "health_education_domain": None, "clinical_public_health_domain": None},
+    ])
+    result = await verify_relation(db, rel, _entities(resource, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.UNVERIFIED
+
+
+def _program_topic(pid: str, title: str, topic_tag: str = "opioid_substance_use") -> tuple[Entity, Entity, Relation]:
+    program = Entity(entity_id=f"program:{pid}", entity_type=EntityType.PROGRAM, label=title,
+                     source_table="programs", source_id=pid, confidence=0.8)
+    topic = Entity(entity_id="query_root", entity_type=EntityType.TOPIC, label="q",
+                   source_table="topic_modules", source_id=topic_tag, confidence=0.8)
+    rel = Relation(relation_id=f"r:{pid}", source_entity_id=program.entity_id, target_entity_id="query_root",
+                   relation_type=RelationType.RELEVANT_TO, confidence=0.7)
+    return program, topic, rel
+
+
+@pytest.mark.asyncio
+async def test_verify_relevant_to_inferred_when_program_text_matches_topic() -> None:
+    program, topic, rel = _program_topic("p1", "Rural Health Workforce Pipeline Program.",
+                                         topic_tag="workforce_development")
+    db = QueuedPostgres(fetchrow_results=[
+        {"topic_label": "Health Workforce Development"},
+        {"program_title": "Rural Health Workforce Pipeline Program.", "program_category": None,
+         "discipline_group": None, "allied_health_category": None},
+    ])
+    result = await verify_relation(db, rel, _entities(program, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.INFERRED
+
+
+@pytest.mark.asyncio
+async def test_verify_relevant_to_unverified_when_program_text_does_not_match_topic() -> None:
+    program, topic, rel = _program_topic("p2", "Human Development, Family Studies, and Related Services.",
+                                         topic_tag="simulation_based_learning")
+    db = QueuedPostgres(fetchrow_results=[
+        {"topic_label": "Simulation-Based Learning"},
+        {"program_title": "Human Development, Family Studies, and Related Services.",
+         "program_category": None, "discipline_group": None, "allied_health_category": None},
+    ])
+    result = await verify_relation(db, rel, _entities(program, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.UNVERIFIED

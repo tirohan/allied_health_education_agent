@@ -69,9 +69,33 @@ _GENERIC_TOPIC_WORDS = {
 }
 
 
+_STOP_WORDS = {"and", "or", "the", "of", "for", "in", "on", "to", "a", "an"}
+
+
 def _significant_words(text: str) -> set[str]:
     words = {word for word in text.replace("-", " ").split() if len(word) > 2}
     return (words - _GENERIC_TOPIC_WORDS) or words
+
+
+def _topic_words_in_text(topic_label: str, blob: str) -> bool:
+    """Whether a topic's own significant (non-generic) words appear in a free-text
+    blob -- a resource/program's title, description, or category fields.
+
+    Unlike _topic_overlap (a topic label vs. another short topic-like tag),
+    this checks only the topic's words against the blob: the blob's own
+    vocabulary is not required to appear in the topic label, since a specific
+    resource title or program title is naturally longer and more particular
+    than a short controlled-vocabulary label.
+    """
+    topic_words = _significant_words(topic_label.strip().lower())
+    blob_norm = blob.strip().lower()
+    if not topic_words or not blob_norm:
+        return False
+    return any(word in blob_norm for word in topic_words)
+
+
+def _content_words(text: str) -> set[str]:
+    return {w for w in text.replace("-", " ").split() if len(w) > 2 and w not in _STOP_WORDS}
 
 
 def _topic_overlap(topic_label: str, candidate: str) -> bool:
@@ -80,8 +104,10 @@ def _topic_overlap(topic_label: str, candidate: str) -> bool:
     simulation_cases.topic_tags). Two labels that only share a generic word
     like "education" or "health" (verified live against real data to produce
     false matches, e.g. "Interprofessional Education" vs "Medical education")
-    must not count as a match -- every significant word of the shorter side
-    has to actually appear in the longer text.
+    must not count as a match -- every content word of the shorter side,
+    generic ones included, has to appear in the longer text. Keeping generic
+    words stops "Public health" (reduced to "public") from matching
+    "Public relations".
     """
     a_norm = topic_label.strip().lower()
     b_norm = candidate.strip().lower()
@@ -89,10 +115,10 @@ def _topic_overlap(topic_label: str, candidate: str) -> bool:
         return False
     if a_norm == b_norm:
         return True
-    a_words = _significant_words(a_norm)
-    b_words = _significant_words(b_norm)
-    if not a_words or not b_words:
+    if not _significant_words(a_norm) or not _significant_words(b_norm):
         return False
+    a_words = _content_words(a_norm)
+    b_words = _content_words(b_norm)
     shorter, longer_text = (a_words, b_norm) if len(a_words) <= len(b_words) else (b_words, a_norm)
     return all(word in longer_text for word in shorter)
 
@@ -326,7 +352,41 @@ async def _verify_mapped_to(
             source.source_id,
             target.source_id,
         )
-        return _junction_result(relation, row, "resource_topics.resource_id/topic_tag")
+        if row is not None:
+            return _junction_result(relation, row, "resource_topics.resource_id/topic_tag")
+
+        # No resource_topics row -- fall back to a text match against the
+        # resource's own free-text fields, the same fallback _verify_supports
+        # already has via research_papers.topic_tags_inferred. Without this a
+        # resource can never rise above UNVERIFIED even when its title is an
+        # exact topical match, because resource_topics coverage is partial.
+        topic_label = await _resolve_topic_label(db, target.source_id) or target.label
+        text_row = await db.fetchrow(
+            """
+            SELECT title, description, health_education_domain, clinical_public_health_domain
+            FROM resources WHERE resource_id = $1
+            """,
+            source.source_id,
+        )
+        blob = " ".join(str(v) for v in (text_row or {}).values() if v)
+        if blob and _topic_words_in_text(topic_label, blob):
+            return _result(
+                relation.relation_id,
+                VerificationStatus.INFERRED,
+                relation.confidence,
+                "text_match",
+                "resources.title/description",
+                f"Resource's own title/description text matches '{topic_label}' "
+                f"(inferred, not human-validated)",
+            )
+        return _result(
+            relation.relation_id,
+            VerificationStatus.UNVERIFIED,
+            relation.confidence,
+            "junction_check",
+            "resource_topics.resource_id/topic_tag",
+            "No direct junction record was found",
+        )
 
     return _result(
         relation.relation_id,
@@ -335,6 +395,58 @@ async def _verify_mapped_to(
         "not_applicable",
         None,
         "MAPPED_TO relation has no direct rule for this entity pair",
+    )
+
+
+async def _verify_relevant_to(
+    db: Postgres,
+    relation: Relation,
+    entities_by_id: Mapping[str, Entity],
+) -> VerificationResult:
+    source = entities_by_id[relation.source_entity_id]
+    target = entities_by_id[relation.target_entity_id]
+    if not (
+        EntityType(source.entity_type) == EntityType.PROGRAM
+        and EntityType(target.entity_type) == EntityType.TOPIC
+    ):
+        return _result(
+            relation.relation_id,
+            VerificationStatus.INFERRED,
+            relation.confidence,
+            "not_applicable",
+            None,
+            "RELEVANT_TO relation has no direct rule for this entity pair",
+        )
+
+    # No junction table links programs to topics, so this can never reach
+    # CONFIRMED -- but it should not blanket-INFER every program regardless of
+    # whether it actually relates to the topic (a program shown only to fill a
+    # display quota vs. one that is a genuine match must not look identical).
+    topic_label = await _resolve_topic_label(db, target.source_id) or target.label
+    row = await db.fetchrow(
+        """
+        SELECT program_title, program_category, discipline_group, allied_health_category
+        FROM programs WHERE program_id = $1
+        """,
+        source.source_id,
+    )
+    blob = " ".join(str(v) for v in (row or {}).values() if v)
+    if blob and _topic_words_in_text(topic_label, blob):
+        return _result(
+            relation.relation_id,
+            VerificationStatus.INFERRED,
+            relation.confidence,
+            "text_match",
+            "programs.program_title/category",
+            f"Program's title/category text matches '{topic_label}' (inferred, not human-validated)",
+        )
+    return _result(
+        relation.relation_id,
+        VerificationStatus.UNVERIFIED,
+        relation.confidence,
+        "text_match",
+        "programs.program_title" if row else None,
+        f"No text overlap found between this program and '{topic_label}'",
     )
 
 
@@ -418,6 +530,20 @@ async def _verify_offered_at(
         source.source_id,
         int(target.source_id),
     )
+    if row is None:
+        other = await db.fetchrow(
+            "SELECT unitid FROM programs WHERE program_id = $1 AND unitid IS NOT NULL",
+            source.source_id,
+        )
+        if other is not None:
+            return _result(
+                relation.relation_id,
+                VerificationStatus.REFUTED,
+                relation.confidence,
+                "junction_check",
+                "programs.program_id/unitid",
+                f"Program is recorded at unitid {other['unitid']}, not {target.source_id}",
+            )
     return _junction_result(relation, row, "programs.program_id/unitid")
 
 
@@ -452,7 +578,23 @@ async def _verify_supports(
     #   reviewed_valid   -> eligible for CONFIRMED
     #   reviewed_unsure  -> maximum INFERRED
     #   unreviewed       -> maximum INFERRED
-    #   reviewed_invalid -> excluded from support (do not raise INFERRED)
+    #   reviewed_invalid -> excluded from support (do not raise INFERRED);
+    #                       an exact-name reviewed_invalid row is checked first so
+    #                       a looser unreviewed match cannot resurrect it
+    exact_label = topic_label.strip().lower()
+    if any(
+        str(row.get("topic_validation_status")) == "reviewed_invalid"
+        and str(row.get("topic_name") or "").strip().lower() == exact_label
+        for row in topic_rows
+    ):
+        return _result(
+            relation.relation_id,
+            VerificationStatus.UNVERIFIED,
+            relation.confidence,
+            "text_match",
+            "paper_topics.paper_id/topic_name",
+            f"Mapping to '{topic_label}' was reviewed_invalid and is excluded from support",
+        )
     overlapping = [
         str(row.get("topic_validation_status") or "unreviewed")
         for row in topic_rows
@@ -522,6 +664,8 @@ async def _verify_supports(
         )
 
     if topic_rows:
+        # Kept at INFERRED: live query-root topics are coarse, and making this
+        # UNVERIFIED demoted relevant retrieved papers in the 2026-09-27 live audit.
         return _result(
             relation.relation_id,
             VerificationStatus.INFERRED,
@@ -646,6 +790,7 @@ RELATION_VERIFIERS: dict[RelationType, RelationVerifier] = {
     RelationType.SUPPORTS: _verify_supports,
     RelationType.TRAINED_FOR: _verify_trained_for,
     RelationType.SHORTAGE_FOR: _verify_shortage_for,
+    RelationType.RELEVANT_TO: _verify_relevant_to,
 }
 
 

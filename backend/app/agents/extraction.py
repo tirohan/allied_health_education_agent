@@ -24,6 +24,52 @@ COLLECTION_ENTITY: dict[RetrievalCollection, tuple[EntityType, RelationType]] = 
 }
 
 
+# Words that carry no topical signal for the relevance gate below.
+_GATE_STOPWORDS = {
+    "what", "which", "where", "when", "does", "that", "this", "with", "from", "into",
+    "about", "their", "have", "high", "limited", "need", "needs", "support", "address",
+    "education", "educational", "training", "health", "healthcare", "care", "learning",
+    "resources", "resource", "teaching", "students", "allied", "based", "using",
+}
+# Counties and programs are selected by the orchestrator's place/program gating,
+# and their text (names, CIP titles) rarely repeats query words.
+_GATE_EXEMPT = {RetrievalCollection.COMMUNITIES, RetrievalCollection.PROGRAMS}
+
+
+# Place words are answered by the county layer, not by paper/resource text.
+_PLACE_WORDS = {
+    "rural", "urban", "county", "counties", "community", "communities", "local",
+    "region", "regional", "underserved", "shortage", "state", "states",
+}
+
+
+def _query_stems(query: str) -> set[str]:
+    from backend.app.agents.orchestrator import US_STATES
+
+    lowered = query.lower()
+    for state_name in US_STATES:
+        lowered = re.sub(rf"\b{state_name}\b", " ", lowered)
+    words = re.findall(r"[a-z][a-z-]{3,}", lowered)
+    return {w[:6] for w in words if w not in _GATE_STOPWORDS and w not in _PLACE_WORDS}
+
+
+def _passes_relevance_gate(stems: set[str], doc: Any) -> bool:
+    """Keep a document only if it repeats enough of the query's topical words.
+
+    ponytail: lexical gate (6-char stems); swap for an embedding-similarity
+    threshold if it drops relevant paraphrases.
+    """
+    if RetrievalCollection(doc.collection) in _GATE_EXEMPT or not stems:
+        return True
+    blob = f"{doc.title} {doc.text[:800]}".lower()
+    hits = sum(1 for stem in stems if stem in blob)
+    return hits >= (1 if len(stems) <= 2 else 2)
+
+
+def _title_key(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
 async def extraction_node(
     state: MindMapState,
     config: RunnableConfig | None = None,
@@ -105,10 +151,20 @@ def _deterministic_extract(state: MindMapState) -> tuple[list[Entity], list[Rela
     )
     entities.append(query_entity)
 
+    stems = _query_stems(query)
+    seen_titles: set[str] = set()
     for doc in state.get("retrieved_docs", []):
         mapping = COLLECTION_ENTITY.get(RetrievalCollection(doc.collection))
         if mapping is None:
             continue
+        # The same MedEdPORTAL item is often indexed as a paper, a resource, and
+        # a simulation case; keep the highest-ranked copy only.
+        key = _title_key(doc.title)
+        if key and key in seen_titles:
+            continue
+        if not _passes_relevance_gate(stems, doc):
+            continue
+        seen_titles.add(key)
         entity_type, relation_type = mapping
         # County relations point from root topic to county for clearer navigation.
         if entity_type == EntityType.COUNTY:
@@ -422,14 +478,42 @@ def _coerce_relation(item: dict[str, Any]) -> Relation | None:
         return None
 
 
+# Ordered (specific first) keyword -> topic_modules.topic_tag. The query_root
+# Topic entity's identity, and any text-relevance check against it (e.g.
+# _verify_relevant_to), depends on this tag resolving to topic_modules.topic_label
+# via _resolve_topic_label -- a wrong tag silently mislabels the query's own root
+# node and breaks every downstream relevance comparison.
+_TOPIC_TAG_RULES: tuple[tuple[str, str], ...] = (
+    (r"opioid|substance", "opioid_substance_use"),
+    (r"fall|\baging\b", "aging_fall_prevention"),
+    (r"digital|ai literacy|telehealth", "digital_health_ai_literacy"),
+    (r"chronic|diabetes", "chronic_disease"),
+    # Subject-matter tags before "simulation": a query naming a specific
+    # imaging modality should resolve to that subject, not the generic
+    # teaching-method tag, since the latter's label shares almost no words
+    # with an imaging-specific resource title (see _topic_words_in_text).
+    (r"sonograph|ultrasound|\bpocus\b|radiolog|radiograph|diagnostic imaging|medical imaging",
+     "diagnostic_imaging"),
+    (r"interprofessional", "interprofessional_education"),
+    (r"simulation", "simulation_based_learning"),
+    (r"physical therap|occupational therap|rehabilitat", "rehabilitation_sciences"),
+    (r"\bnursing\b", "nursing_education"),
+    (r"patient safety|quality improvement", "patient_safety"),
+    (r"health equity|disparit|social determinant", "health_equity"),
+    (r"public health|community health", "public_health_training"),
+    (r"health literacy", "health_literacy_communication"),
+    (r"informatics|electronic health record|\behr\b", "health_informatics"),
+    (r"emergency preparedness|disaster", "emergency_preparedness"),
+    (r"workforce|shortage|pipeline", "workforce_development"),
+    (r"clinical reasoning|decision.making", "clinical_reasoning"),
+)
+
+
 def _topic_id_for_query(query: str) -> str:
     lowered = query.lower()
-    if re.search(r"opioid|substance", lowered):
-        return "opioid_substance_use"
-    if re.search(r"fall|aging", lowered):
-        return "aging_fall_prevention"
-    if re.search(r"digital|ai literacy|telehealth", lowered):
-        return "digital_health_ai_literacy"
-    if re.search(r"chronic|diabetes", lowered):
-        return "chronic_disease"
-    return "behavioral_health_substance_use"
+    for pattern, tag in _TOPIC_TAG_RULES:
+        if re.search(pattern, lowered):
+            return tag
+    # Generic, honest fallback -- never guess a specific category (e.g. the
+    # old default of "behavioral_health_substance_use" for every unmatched query).
+    return "allied_health_education"

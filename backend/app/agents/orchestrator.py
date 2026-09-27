@@ -23,6 +23,23 @@ _STATE_RE = re.compile(
 )
 
 
+# The county layer and program search only answer questions that ask about
+# place/need or about programs; otherwise they add unrelated nodes (e.g. Georgia
+# counties on a sonography query), as the 2026-09-27 live audit showed.
+_PLACE_TOKENS = (
+    "georgia", "county", "counties", "rural", "hpsa", "shortage", "underserved",
+    "community", "communities", "region", "local",
+)
+_PROGRAM_TOKENS = (
+    "program", "degree", "school", "college", "universit", "institution", "workforce",
+    "pipeline", "enroll", "accredit", "offered", "available", "graduate",
+)
+
+
+def _mentions(lowered: str, tokens: tuple[str, ...]) -> bool:
+    return any(re.search(rf"\b{token}", lowered) for token in tokens)
+
+
 def states_named(query: str) -> list[str]:
     """Postal codes of U.S. states named in the query, in order of appearance."""
     lowered = query.lower()
@@ -55,6 +72,16 @@ async def orchestrator_node(state: MindMapState) -> MindMapState:
     if any(token in lowered for token in ("simulation", "case", "scenario")):
         if RetrievalCollection.SIMULATION_CASES not in inferred:
             inferred.append(RetrievalCollection.SIMULATION_CASES)
+    names_state = bool(states_named(query)) or " ga" in f" {lowered}"
+    gated_out = []
+    if not (_mentions(lowered, _PLACE_TOKENS) or names_state):
+        gated_out.append(RetrievalCollection.COMMUNITIES)
+    if not (_mentions(lowered, _PROGRAM_TOKENS) or _mentions(lowered, _PLACE_TOKENS) or names_state):
+        gated_out.append(RetrievalCollection.PROGRAMS)
+    inferred = [c for c in inferred if c not in gated_out] or [
+        RetrievalCollection.PAPERS,
+        RetrievalCollection.RESOURCES,
+    ]
     filters = dict(state.get("filters") or {})
     if "georgia" in lowered or " ga" in f" {lowered}":
         filters.setdefault("state", "GA")
@@ -84,6 +111,7 @@ async def orchestrator_node(state: MindMapState) -> MindMapState:
                     "collections": [collection.value for collection in inferred],
                     "filters": filters,
                     "scope_notes": scope_notes,
+                    "gated_out": [collection.value for collection in gated_out],
                 },
             ),
         ],

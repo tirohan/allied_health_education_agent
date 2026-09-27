@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 from backend.app.agents.graph import compiled_graph, run_mindmap_pipeline
 from backend.app.agents.state import MindMapState
 from backend.app.schemas.api import MindMapRequest, MindMapResponse
+from backend.app.services.run_store import persist_run
 
 router = APIRouter(prefix="/api/v1", tags=["mindmap"])
 logger = structlog.get_logger(__name__)
@@ -52,6 +53,7 @@ async def generate_mindmap(request: Request, body: MindMapRequest) -> MindMapRes
         raise HTTPException(
             status_code=500, detail="Mind map pipeline completed without a graph"
         )
+    await persist_run(services.postgres, final_state)
     response = MindMapResponse(
         graph=graph,
         citations=final_state.get("citations", []),
@@ -161,6 +163,7 @@ async def stream_mindmap(request: Request, body: MindMapRequest) -> EventSourceR
                 "data": json.dumps({"detail": "Mind map pipeline completed without a graph"}),
             }
             return
+        await persist_run(services.postgres, final_state)
 
         response = MindMapResponse(
             graph=graph,

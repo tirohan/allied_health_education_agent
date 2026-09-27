@@ -203,3 +203,110 @@ async def test_provenance_rows_and_faculty_review_are_returned() -> None:
 async def test_unsupported_id_column_is_rejected() -> None:
     with pytest.raises(ValueError):
         await record_evidence(_FakeDb(1, [], None), "research_papers", "x", id_column="doi")  # type: ignore[arg-type]
+
+
+# ── Section 3: collection gating, extraction pruning, run store ──────────────
+
+from backend.app.agents.extraction import _deterministic_extract  # noqa: E402
+from backend.app.agents.state import Entity, RetrievedDoc  # noqa: E402
+from backend.app.services.run_store import claim_rows  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_non_geographic_query_drops_county_and_program_collections() -> None:
+    state = await orchestrator_node({
+        "query": "diagnostic medical sonography simulation-based training",
+        "collections": [RetrievalCollection.PAPERS, RetrievalCollection.RESOURCES,
+                        RetrievalCollection.PROGRAMS, RetrievalCollection.COMMUNITIES],
+        "filters": {}, "agent_trace": [],
+    })
+    assert RetrievalCollection.COMMUNITIES not in state["collections"]
+    assert RetrievalCollection.PROGRAMS not in state["collections"]
+    assert RetrievalCollection.SIMULATION_CASES in state["collections"]
+
+
+@pytest.mark.asyncio
+async def test_program_question_keeps_programs() -> None:
+    state = await orchestrator_node({
+        "query": "which sonography degree programs are accredited",
+        "collections": [RetrievalCollection.PAPERS, RetrievalCollection.PROGRAMS,
+                        RetrievalCollection.COMMUNITIES],
+        "filters": {}, "agent_trace": [],
+    })
+    assert RetrievalCollection.PROGRAMS in state["collections"]
+    assert RetrievalCollection.COMMUNITIES not in state["collections"]
+
+
+def _doc(i: str, collection: RetrievalCollection, title: str, text: str = "") -> RetrievedDoc:
+    table = {RetrievalCollection.PAPERS: "research_papers", RetrievalCollection.RESOURCES: "resources",
+             RetrievalCollection.SIMULATION_CASES: "simulation_cases",
+             RetrievalCollection.COMMUNITIES: "county_profiles"}[collection]
+    return RetrievedDoc(id=i, collection=collection, source_table=table, source_id=i,
+                        title=title, text=text, score=0.5)
+
+
+def test_extraction_dedupes_titles_and_drops_off_topic_docs() -> None:
+    docs = [
+        _doc("s1", RetrievalCollection.SIMULATION_CASES, "Opioid Overdose Simulation for Nursing Students"),
+        _doc("r1", RetrievalCollection.RESOURCES, "Opioid overdose simulation for nursing students."),
+        _doc("p1", RetrievalCollection.PAPERS, "Translational Educational Research"),
+        _doc("c1", RetrievalCollection.COMMUNITIES, "Fulton County, GA"),
+    ]
+    entities, relations = _deterministic_extract(
+        {"query": "opioid overdose simulation in rural Georgia", "retrieved_docs": docs}
+    )
+    ids = {e.source_id for e in entities}
+    assert "s1" in ids and "r1" not in ids   # duplicate title kept once
+    assert "p1" not in ids                   # no query topic words
+    assert "c1" in ids                       # counties are exempt from the text gate
+    assert len(relations) == len(entities) - 1
+
+
+def test_claim_rows_cover_entities_and_relations() -> None:
+    paper = Entity(entity_id="paper:1", entity_type="Paper", label="P", source_table="research_papers",
+                   source_id="1", confidence=0.8)
+    topic = Entity(entity_id="query_root", entity_type="Topic", label="T", source_table="topic_modules",
+                   source_id="t", confidence=0.8)
+    rel = Relation(relation_id="r1", source_entity_id="paper:1", target_entity_id="query_root",
+                   relation_type=RelationType.SUPPORTS, confidence=0.7)
+    results = [
+        VerificationResult(entity_or_relation_id="paper:1", verification_status=VerificationStatus.CONFIRMED,
+                           verification_method="direct_lookup", evidence_source="research_papers"),
+        VerificationResult(entity_or_relation_id="r1", verification_status=VerificationStatus.INFERRED,
+                           verification_method="text_match", evidence_snippet="x"),
+    ]
+    rows = claim_rows({"extracted_entities": [paper, topic], "extracted_relations": [rel],
+                       "verification_results": results})
+    assert [(r[0], r[1], r[3]) for r in rows] == [("paper:1", "entity", "CONFIRMED"), ("r1", "relation", "INFERRED")]
+    assert rows[1][2] == "P SUPPORTS T"
+
+
+# ── Query-root topic tag no longer defaults to a wrong specific category ─────
+
+from backend.app.agents.extraction import _topic_id_for_query  # noqa: E402
+
+
+def test_topic_id_matches_specific_categories() -> None:
+    assert _topic_id_for_query("physical therapy workforce in Ohio") == "rehabilitation_sciences"
+    assert _topic_id_for_query("diagnostic medical sonography simulation-based training") == "diagnostic_imaging"
+    assert _topic_id_for_query("point-of-care ultrasound education for clinicians") == "diagnostic_imaging"
+    assert _topic_id_for_query("radiologic technology program accreditation standards") == "diagnostic_imaging"
+    assert _topic_id_for_query("Which allied health programs are available near Georgia "
+                               "health professional shortage counties?") == "workforce_development"
+    assert _topic_id_for_query("opioid education in rural Georgia") == "opioid_substance_use"
+
+
+def test_topic_id_falls_back_to_generic_not_a_specific_wrong_category() -> None:
+    # Old behavior silently mislabeled any unmatched query as "behavioral_health_substance_use".
+    assert _topic_id_for_query("physician assistant surgical skills training") == "allied_health_education"
+
+
+# ── Topic-words-in-blob helper (mapped_to / relevant_to fallback) ────────────
+
+from backend.app.agents.verification import _topic_words_in_text  # noqa: E402
+
+
+def test_topic_words_in_text_requires_a_real_shared_word() -> None:
+    assert _topic_words_in_text("Opioid and Substance Use Education", "Opioid Overdose Toolkit") is True
+    assert _topic_words_in_text("Health Workforce Development", "Nursing Roles and Practices") is False
+    assert _topic_words_in_text("", "anything") is False
