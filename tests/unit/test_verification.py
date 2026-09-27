@@ -84,7 +84,10 @@ def _entities(*items: Entity) -> dict[str, Entity]:
 
 
 @pytest.mark.asyncio
-async def test_verify_supports_confirmed_via_paper_topics() -> None:
+async def test_verify_supports_confirmed_only_when_mapping_human_validated() -> None:
+    # A matching paper-topic mapping now only CONFIRMS the SUPPORTS relation when
+    # a human reviewer validated that exact mapping (topic_validation_status =
+    # 'reviewed_valid'), per the validation-status-aware verification change.
     paper = Entity(
         entity_id="paper:W1", entity_type=EntityType.PAPER, label="p",
         source_table="research_papers", source_id="W1", confidence=0.8,
@@ -99,11 +102,120 @@ async def test_verify_supports_confirmed_via_paper_topics() -> None:
     )
     db = QueuedPostgres(
         fetchrow_results=[{"topic_label": "Interprofessional Education"}],
-        fetch_results=[[{"topic_name": "Interprofessional Education and Collaboration"}]],
+        fetch_results=[[{
+            "topic_name": "Interprofessional Education and Collaboration",
+            "topic_validation_status": "reviewed_valid",
+        }]],
     )
     result = await verify_relation(db, relation, _entities(paper, topic))  # type: ignore[arg-type]
     assert result.verification_status == VerificationStatus.CONFIRMED
     assert result.verification_method == "text_match"
+
+
+@pytest.mark.asyncio
+async def test_verify_supports_unreviewed_mapping_is_inferred_not_confirmed() -> None:
+    # Key regression guard for the validation-status-aware change: an unreviewed
+    # matching mapping must NOT reach CONFIRMED (it previously did), because the
+    # underlying mapping may be one of the ~47.5% invalid ones RQ2 surfaced.
+    paper = Entity(
+        entity_id="paper:W1u", entity_type=EntityType.PAPER, label="p",
+        source_table="research_papers", source_id="W1u", confidence=0.8,
+    )
+    topic = Entity(
+        entity_id="query_root", entity_type=EntityType.TOPIC, label="q",
+        source_table="topic_modules", source_id="interprofessional_education", confidence=0.8,
+    )
+    relation = Relation(
+        relation_id="r1u", source_entity_id="paper:W1u", target_entity_id="query_root",
+        relation_type=RelationType.SUPPORTS, confidence=0.7,
+    )
+    db = QueuedPostgres(
+        fetchrow_results=[{"topic_label": "Interprofessional Education"}, {"topic_tags_inferred": None}],
+        fetch_results=[[{
+            "topic_name": "Interprofessional Education and Collaboration",
+            "topic_validation_status": "unreviewed",
+        }]],
+    )
+    result = await verify_relation(db, relation, _entities(paper, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.INFERRED
+
+
+@pytest.mark.asyncio
+async def test_verify_supports_invalid_mapping_excluded_not_inferred() -> None:
+    # A mapping a reviewer marked invalid must not qualify Confirmed *or* Inferred.
+    paper = Entity(
+        entity_id="paper:W1i", entity_type=EntityType.PAPER, label="p",
+        source_table="research_papers", source_id="W1i", confidence=0.8,
+    )
+    topic = Entity(
+        entity_id="query_root", entity_type=EntityType.TOPIC, label="q",
+        source_table="topic_modules", source_id="interprofessional_education", confidence=0.8,
+    )
+    relation = Relation(
+        relation_id="r1i", source_entity_id="paper:W1i", target_entity_id="query_root",
+        relation_type=RelationType.SUPPORTS, confidence=0.7,
+    )
+    db = QueuedPostgres(
+        fetchrow_results=[{"topic_label": "Interprofessional Education"}, {"topic_tags_inferred": None}],
+        fetch_results=[[{
+            "topic_name": "Interprofessional Education and Collaboration",
+            "topic_validation_status": "reviewed_invalid",
+        }]],
+    )
+    result = await verify_relation(db, relation, _entities(paper, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.UNVERIFIED
+
+
+@pytest.mark.asyncio
+async def test_verify_supports_reviewed_unsure_capped_at_inferred() -> None:
+    paper = Entity(
+        entity_id="paper:W1s", entity_type=EntityType.PAPER, label="p",
+        source_table="research_papers", source_id="W1s", confidence=0.8,
+    )
+    topic = Entity(
+        entity_id="query_root", entity_type=EntityType.TOPIC, label="q",
+        source_table="topic_modules", source_id="interprofessional_education", confidence=0.8,
+    )
+    relation = Relation(
+        relation_id="r1s", source_entity_id="paper:W1s", target_entity_id="query_root",
+        relation_type=RelationType.SUPPORTS, confidence=0.7,
+    )
+    db = QueuedPostgres(
+        fetchrow_results=[{"topic_label": "Interprofessional Education"}],
+        fetch_results=[[{
+            "topic_name": "Interprofessional Education and Collaboration",
+            "topic_validation_status": "reviewed_unsure",
+        }]],
+    )
+    result = await verify_relation(db, relation, _entities(paper, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.INFERRED
+    assert result.verification_status != VerificationStatus.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_verify_supports_invalid_mapping_does_not_confirm() -> None:
+    # Legacy alias: invalid mapping must not reach Confirmed.
+    paper = Entity(
+        entity_id="paper:W1i2", entity_type=EntityType.PAPER, label="p",
+        source_table="research_papers", source_id="W1i2", confidence=0.8,
+    )
+    topic = Entity(
+        entity_id="query_root", entity_type=EntityType.TOPIC, label="q",
+        source_table="topic_modules", source_id="interprofessional_education", confidence=0.8,
+    )
+    relation = Relation(
+        relation_id="r1i2", source_entity_id="paper:W1i2", target_entity_id="query_root",
+        relation_type=RelationType.SUPPORTS, confidence=0.7,
+    )
+    db = QueuedPostgres(
+        fetchrow_results=[{"topic_label": "Interprofessional Education"}, {"topic_tags_inferred": None}],
+        fetch_results=[[{
+            "topic_name": "Interprofessional Education and Collaboration",
+            "topic_validation_status": "reviewed_invalid",
+        }]],
+    )
+    result = await verify_relation(db, relation, _entities(paper, topic))  # type: ignore[arg-type]
+    assert result.verification_status != VerificationStatus.CONFIRMED
 
 
 @pytest.mark.asyncio

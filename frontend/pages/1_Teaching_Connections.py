@@ -99,6 +99,8 @@ if response:
         f"Found {len(response['graph'].get('nodes', []))} connected teaching items "
         f"from {response.get('total_sources_queried', 0)} sources."
     )
+    for note in response["graph"].get("scope_notes") or []:
+        st.info(note)
 
     st.subheader("What we found for you")
     if not cards:

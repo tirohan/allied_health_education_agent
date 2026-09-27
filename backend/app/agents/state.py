@@ -142,6 +142,7 @@ class MindMapEdge(BaseModel):
     dashes: bool = False
     relation_id: str | None = None
     note: str | None = None
+    verification_status: VerificationStatus | None = None
 
 
 class MindMapGraph(BaseModel):
@@ -151,6 +152,10 @@ class MindMapGraph(BaseModel):
     query: str
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_sources: int = 0
+    # Latest complete load snapshot the map was built against, or "unsnapshotted".
+    snapshot_id: str = "unsnapshotted"
+    # Coverage caveats for the query (e.g. Georgia-only county layer).
+    scope_notes: list[str] = Field(default_factory=list)
 
 
 class AgentStep(BaseModel):
@@ -176,6 +181,8 @@ class MindMapState(TypedDict, total=False):
     mindmap_graph: MindMapGraph | None
     citations: list[Citation]
     confidence_scores: dict[str, float]
+    snapshot_id: str
+    scope_notes: list[str]
     agent_trace: list[AgentStep]
     messages: Annotated[list[Any], add_messages]
     error: str | None

@@ -2,6 +2,7 @@ from langchain_core.runnables import RunnableConfig
 
 from backend.app.agents.state import AgentStep, MindMapState, RetrievalCollection
 from backend.app.retrieval.hybrid import HybridSearch
+from backend.app.services.provenance import latest_snapshot_id
 
 
 async def research_node(state: MindMapState, config: RunnableConfig) -> MindMapState:
@@ -21,9 +22,11 @@ async def research_node(state: MindMapState, config: RunnableConfig) -> MindMapS
         filters=state.get("filters", {}),
         mode=retrieval_mode,
     )
+    snapshot_id = await latest_snapshot_id(services.postgres)
     return {
         **state,
         "retrieved_docs": docs,
+        "snapshot_id": str(snapshot_id) if snapshot_id is not None else "unsnapshotted",
         "agent_trace": [
             *state.get("agent_trace", []),
             AgentStep(

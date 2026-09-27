@@ -2,7 +2,55 @@ from typing import Any
 
 import streamlit as st
 
-from frontend.api_client import post, safe_call
+from frontend.api_client import ApiError, get, post, safe_call
+
+NOT_RECORDED = "Column source not recorded."
+
+
+def render_record_evidence(card: dict[str, Any]) -> None:
+    """Latest faculty review and, for institutions, which source wrote each column.
+
+    Column sources come only from field_provenance; nothing is inferred from
+    data_sources.
+    """
+    advanced = card.get("advanced") or {}
+    table = advanced.get("source_table")
+    record_id = advanced.get("source_id")
+    if not table or record_id in (None, ""):
+        return
+    params = {"table_name": table, "record_id": str(record_id)}
+    if table == "institutions":
+        params["id_column"] = "unitid"  # institution cards carry the IPEDS unitid
+    try:
+        evidence = get("/api/v1/educator/record-evidence", params)
+    except ApiError as exc:
+        st.caption(f"Record evidence unavailable: {exc}")
+        return
+
+    review = evidence.get("faculty_review")
+    if review:
+        st.markdown(
+            f"**Faculty review:** {review.get('verification_status')} by "
+            f"{review.get('verified_by') or 'unknown reviewer'} on {review.get('verified_date')}"
+        )
+    if table == "institutions":
+        st.markdown(f"**Column sources** (snapshot {evidence.get('snapshot_id')})")
+        if not evidence.get("attributed"):
+            st.caption(NOT_RECORDED)
+        else:
+            st.dataframe(
+                [
+                    {"column": r["column_name"], "source": r["source"],
+                     "action": r["conflict_action"]}
+                    for r in evidence.get("provenance", [])
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                "inserted / overwritten: this source wrote the value. kept_existing: the "
+                "source left the stored value unchanged. Columns not listed: " + NOT_RECORDED
+            )
 
 
 def _card_for_node(
@@ -32,7 +80,11 @@ def render_educator_node_card(
     st.markdown(f"**Why it appeared for this question:** {card['why_it_appeared']}")
     st.markdown(f"**Who it is for:** {card['who_it_is_for']}")
     st.markdown(f"**How strong the evidence is:** {card['evidence_strength']}")
-    st.success(card["evidence_plain"])
+    if card.get("verification_status") == "CONFIRMED":
+        st.success(card["evidence_plain"])
+    else:
+        st.warning(card["evidence_plain"])
+    render_record_evidence(card)
 
     st.markdown("**What you can do next**")
     action_cols = st.columns(min(3, max(1, len(card["next_actions"]))))

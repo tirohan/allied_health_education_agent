@@ -17,20 +17,23 @@ from backend.app.services.llm_json import call_openai_json
 logger = structlog.get_logger(__name__)
 
 MAX_EDGES_TO_CHECK = 8
-# Edges backed by these verification methods were never referentially confirmed
-# against real database structure -- they're exactly the ones worth a second,
-# semantic look. ("text_match" covers the SUPPORTS/TRAINED_FOR fuzzy-overlap
-# verifiers too, so it must stay included or those relations would ironically
-# exempt themselves from critique.)
-NEVER_REFERENTIALLY_CONFIRMED = {"not_applicable", "text_match"}
+# Relations worth a semantic second look, regardless of extraction method.
+RISKY_VERIFICATION_STATUSES = {
+    VerificationStatus.INFERRED,
+    VerificationStatus.UNVERIFIED,
+    VerificationStatus.CONTESTED,
+}
+RISKY_VERIFICATION_METHODS = {"not_applicable", "text_match"}
 
 
 async def critic_node(state: MindMapState, config: RunnableConfig | None = None) -> MindMapState:
-    """Semantically double-check the small set of relations that were never
-    referentially confirmed against the database, using the LLM to compare the
-    claim against its own evidence text. Can only downgrade an edge to
-    CONTESTED, never promote one to CONFIRMED -- that would blur what
-    CONFIRMED is supposed to mean (a real database match).
+    """Semantically double-check high-risk relations using the LLM to compare
+    the claim against its evidence text. Can only downgrade an edge to
+    CONTESTED, never promote one to CONFIRMED.
+
+    Activation is validation-risk-based, not extraction-mode-based: the critic
+    evaluates unreviewed / inferred / free-text / semantically mapped relations
+    even when extraction was deterministic.
     """
     configurable = (config or {}).get("configurable", {})
     services = configurable.get("services") if isinstance(configurable, dict) else None
@@ -39,22 +42,17 @@ async def critic_node(state: MindMapState, config: RunnableConfig | None = None)
     if graph is None:
         return state
 
-    extraction_step = next(
-        (step for step in state.get("agent_trace", []) if step.agent == "extraction"), None
-    )
-    used_llm = bool(extraction_step and extraction_step.metadata.get("mode") == "llm_structured")
-
     api_key = getattr(getattr(services, "settings", None), "openai_api_key", None)
     secret = api_key.get_secret_value().strip() if api_key is not None else ""
 
-    if not used_llm or not secret:
+    if not secret:
         return {
             **state,
             "agent_trace": [
                 *state.get("agent_trace", []),
                 AgentStep(
                     agent="critic",
-                    message="Skipped: extraction wasn't LLM-assisted, so there's nothing to double-check.",
+                    message="Skipped: no OpenAI API key configured for critique.",
                 ),
             ],
         }
@@ -81,7 +79,15 @@ async def critic_node(state: MindMapState, config: RunnableConfig | None = None)
             relation = relations_by_id.get(edge.relation_id)
             if result is None or relation is None:
                 continue
-            if result.verification_method not in NEVER_REFERENTIALLY_CONFIRMED:
+            risky_status = result.verification_status in RISKY_VERIFICATION_STATUSES
+            risky_method = result.verification_method in RISKY_VERIFICATION_METHODS
+            if not (risky_status or risky_method):
+                continue
+            # Confirmed/database-supported via referential join does not need critique
+            if (
+                result.verification_status == VerificationStatus.CONFIRMED
+                and result.verification_method not in RISKY_VERIFICATION_METHODS
+            ):
                 continue
             candidates.append((edge, relation, result))
 
@@ -95,7 +101,7 @@ async def critic_node(state: MindMapState, config: RunnableConfig | None = None)
                     *state.get("agent_trace", []),
                     AgentStep(
                         agent="critic",
-                        message="Skipped: no unconfirmed connections needed a second look.",
+                        message="Skipped: no high-risk (unreviewed/inferred/free-text) connections needed critique.",
                     ),
                 ],
             }
@@ -122,16 +128,40 @@ async def critic_node(state: MindMapState, config: RunnableConfig | None = None)
                         "dashes": True,
                         "weight": new_weight,
                         "note": verdict["rationale"],
+                        "verification_status": VerificationStatus.CONTESTED,
                     }
                 )
             )
             contested_ids.add(edge.relation_id)
+
+        # Propagate Contested into verification_results (not only edge visuals).
+        updated_verification = list(state.get("verification_results", []))
+        if contested_ids:
+            rewritten: list[VerificationResult] = []
+            for result in updated_verification:
+                if result.entity_or_relation_id in contested_ids:
+                    rewritten.append(
+                        result.model_copy(
+                            update={
+                                "verification_status": VerificationStatus.CONTESTED,
+                                "evidence_snippet": (
+                                    f"Critic contested: "
+                                    f"{verdicts.get(result.entity_or_relation_id, {}).get('rationale', '')}"
+                                )[:500]
+                                or result.evidence_snippet,
+                            }
+                        )
+                    )
+                else:
+                    rewritten.append(result)
+            updated_verification = rewritten
 
         updated_graph = graph.model_copy(update={"edges": updated_edges})
 
         return {
             **state,
             "mindmap_graph": updated_graph,
+            "verification_results": updated_verification,
             "agent_trace": [
                 *state.get("agent_trace", []),
                 AgentStep(

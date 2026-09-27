@@ -443,17 +443,65 @@ async def _verify_supports(
 
     topic_label = await _resolve_topic_label(db, target.source_id) or target.label
     topic_rows = await db.fetch(
-        "SELECT topic_name FROM paper_topics WHERE paper_id = $1",
+        "SELECT topic_name, topic_validation_status FROM paper_topics WHERE paper_id = $1",
         source.source_id,
     )
-    if any(_topic_overlap(topic_label, str(row.get("topic_name") or "")) for row in topic_rows):
+    # Validation-status-aware confirmation. RQ2 found paper--topic mappings
+    # only ~47.5% valid in sample, so mapping existence alone never yields
+    # CONFIRMED. Decision policy:
+    #   reviewed_valid   -> eligible for CONFIRMED
+    #   reviewed_unsure  -> maximum INFERRED
+    #   unreviewed       -> maximum INFERRED
+    #   reviewed_invalid -> excluded from support (do not raise INFERRED)
+    overlapping = [
+        str(row.get("topic_validation_status") or "unreviewed")
+        for row in topic_rows
+        if _topic_overlap(topic_label, str(row.get("topic_name") or ""))
+    ]
+    if any(status == "reviewed_valid" for status in overlapping):
         return _result(
             relation.relation_id,
             VerificationStatus.CONFIRMED,
             relation.confidence,
             "text_match",
             "paper_topics.paper_id/topic_name",
-            f"Paper is topically classified as matching '{topic_label}'",
+            f"Paper is human-validated as topically matching '{topic_label}'",
+        )
+    # Cap at INFERRED for unreviewed or reviewed_unsure matches
+    if any(status in ("unreviewed", "reviewed_unsure") for status in overlapping):
+        has_unreviewed = any(status == "unreviewed" for status in overlapping)
+        has_unsure = any(status == "reviewed_unsure" for status in overlapping)
+        if has_unreviewed and has_unsure:
+            reason = (
+                f"Paper is topically classified as matching '{topic_label}', but "
+                f"matching mappings are unreviewed or reviewed_unsure (capped at inferred)"
+            )
+        elif has_unsure:
+            reason = (
+                f"Paper is topically classified as matching '{topic_label}', but that "
+                f"mapping is reviewed_unsure (capped at inferred)"
+            )
+        else:
+            reason = (
+                f"Paper is topically classified as matching '{topic_label}', but that "
+                f"mapping is unreviewed"
+            )
+        return _result(
+            relation.relation_id,
+            VerificationStatus.INFERRED,
+            relation.confidence,
+            "text_match",
+            "paper_topics.paper_id/topic_name",
+            reason,
+        )
+    if overlapping:  # only reviewer-rejected matches remain -- exclude from support
+        return _result(
+            relation.relation_id,
+            VerificationStatus.UNVERIFIED,
+            relation.confidence,
+            "text_match",
+            "paper_topics.paper_id/topic_name",
+            f"Matching classification for '{topic_label}' was reviewed_invalid and is excluded from support",
         )
 
     inferred_row = await db.fetchrow(
@@ -464,11 +512,13 @@ async def _verify_supports(
     if inferred_tags and _topic_overlap(topic_label, inferred_tags):
         return _result(
             relation.relation_id,
-            VerificationStatus.CONFIRMED,
+            # topic_tags_inferred is machine-inferred, not a human-validated
+            # junction, so it grounds an INFERRED status, not CONFIRMED.
+            VerificationStatus.INFERRED,
             relation.confidence,
             "text_match",
             "research_papers.topic_tags_inferred",
-            f"Paper's inferred topic tags mention '{inferred_tags}'",
+            f"Paper's inferred topic tags mention '{inferred_tags}' (inferred, not human-validated)",
         )
 
     if topic_rows:

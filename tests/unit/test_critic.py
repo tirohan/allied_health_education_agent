@@ -87,7 +87,8 @@ def _config(services: SimpleNamespace) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_critic_skips_when_extraction_not_llm() -> None:
+async def test_critic_runs_on_risky_edges_even_when_extraction_deterministic() -> None:
+    """Critic activation is risk-based, not extraction-mode-based."""
     state = _state(
         extraction_mode="deterministic",
         edges=[_edge("r1")],
@@ -105,10 +106,40 @@ async def test_critic_skips_when_extraction_not_llm() -> None:
             )
         ],
     )
+    canned = {"r1": {"verdict": "supports", "rationale": "ok"}}
+    with patch(
+        "backend.app.agents.critic._critique", new_callable=AsyncMock, return_value=canned
+    ) as mock_critique:
+        result = await critic_node(state, _config(_services()))
+    mock_critique.assert_called_once()
+    assert result["mindmap_graph"].edges[0].note is None
+
+
+@pytest.mark.asyncio
+async def test_critic_skips_when_extraction_not_llm() -> None:
+    # Kept as a compatibility check name, but behavior is now: deterministic
+    # extraction with risky edges still invokes the critic (see test above).
+    # With no risky edges, critic still skips.
+    state = _state(
+        extraction_mode="deterministic",
+        edges=[_edge("r1")],
+        verification_results=[
+            VerificationResult(
+                entity_or_relation_id="r1",
+                verification_status=VerificationStatus.CONFIRMED,
+                verification_method="junction_check",
+            )
+        ],
+        relations=[
+            Relation(
+                relation_id="r1", source_entity_id="paper:1", target_entity_id="query_root",
+                relation_type=RelationType.SUPPORTS, confidence=0.7,
+            )
+        ],
+    )
     with patch("backend.app.agents.critic._critique", new_callable=AsyncMock) as mock_critique:
         result = await critic_node(state, _config(_services()))
     mock_critique.assert_not_called()
-    assert result["mindmap_graph"].edges[0].note is None
     assert "Skipped" in result["agent_trace"][-1].message
 
 

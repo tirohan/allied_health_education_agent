@@ -48,9 +48,10 @@ ENTITY_PLAIN: dict[str, str] = {
 }
 
 EVIDENCE_PLAIN: dict[str, str] = {
-    "CONFIRMED": "Strong evidence from database records",
-    "INFERRED": "Possible link that may need expert review",
+    "CONFIRMED": "Checked against a source database record",
+    "INFERRED": "Possible link, not confirmed fact; needs expert review",
     "UNVERIFIED": "Not yet verified against a primary record",
+    "CONTESTED": "Flagged by the automated critic as contradicted by its own evidence",
     "REFUTED": "Contradicted by the database and hidden from planning views",
 }
 

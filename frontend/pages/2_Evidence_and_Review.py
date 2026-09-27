@@ -2,14 +2,14 @@ import pandas as pd
 import streamlit as st
 
 from frontend.api_client import ApiError, post, safe_call
-from frontend.components.educator_panel import render_plain_evidence_list
+from frontend.components.educator_panel import render_plain_evidence_list, render_record_evidence
 from frontend.components.role_selector import render_role_selector
 from frontend.components.teaching_list import render_teaching_list_sidebar
 
 st.set_page_config(page_title="Evidence and Review", layout="wide")
 st.title("Evidence and Review")
 st.caption(
-    "See why an item is trustworthy, then mark it as useful, not relevant, or needing review."
+    "See how each item was checked, then mark it as useful, not relevant, or needing review."
 )
 
 with st.sidebar:
@@ -48,19 +48,46 @@ if not cards:
         st.error(f"Couldn't load evidence: {exc}")
         st.stop()
 
+graph = response.get("graph") or {}
+st.caption(f"Data snapshot: {graph.get('snapshot_id') or 'unsnapshotted'}")
+for note in graph.get("scope_notes") or []:
+    st.info(note)
+
+STATUS_ORDER = ["CONFIRMED", "INFERRED", "UNVERIFIED", "CONTESTED", "REFUTED"]
+STATUS_HELP = {
+    "CONFIRMED": "Checked against a source database record (for paper-topic links: a human-validated mapping).",
+    "INFERRED": "A plausible link that is NOT confirmed fact. Treat as a lead for expert review.",
+    "UNVERIFIED": "No supporting source record was found yet. Treat with extra caution.",
+    "CONTESTED": "The automated critic judged the link contradicted by its own evidence. It can only downgrade, never confirm.",
+    "REFUTED": "Contradicted by the database or rejected by faculty review; hidden from the map.",
+}
+STATUS_LABEL = {
+    "CONFIRMED": "✅ Confirmed", "INFERRED": "🟠 Inferred", "UNVERIFIED": "⚪ Unverified",
+    "CONTESTED": "🟣 Contested", "REFUTED": "🔴 Refuted",
+}
+
+
+def _status_counts(statuses) -> dict[str, int]:
+    counts = dict.fromkeys(STATUS_ORDER, 0)
+    for status in statuses:
+        if status in counts:  # edges from pre-revision cached maps carry no status
+            counts[status] += 1
+    return counts
+
+
 if cards:
-    counts = {"CONFIRMED": 0, "INFERRED": 0, "UNVERIFIED": 0}
-    for card in cards:
-        status = card.get("verification_status", "UNVERIFIED")
-        counts[status] = counts.get(status, 0) + 1
-    st.markdown("**How trustworthy is this map, at a glance?**")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("✅ Confirmed", counts["CONFIRMED"], help="Directly checked against our source database.")
-    m2.metric("🟠 AI-inferred", counts["INFERRED"], help="A likely connection the AI made that isn't directly confirmed yet.")
-    m3.metric("⚪ Unverified", counts["UNVERIFIED"], help="Not yet checked -- treat with extra caution.")
+    st.markdown("**How was this map checked, at a glance?**")
+    for title, counts in (
+        ("Items", _status_counts(card.get("verification_status") for card in cards)),
+        ("Connections", _status_counts(edge.get("verification_status") for edge in graph.get("edges", []))),
+    ):
+        st.caption(title)
+        for column, status in zip(st.columns(len(STATUS_ORDER)), STATUS_ORDER):
+            column.metric(STATUS_LABEL[status], counts[status], help=STATUS_HELP[status])
     st.caption(
-        "Items that failed verification never make it into your map, so everything "
-        "below has at least some evidence behind it."
+        "Only Confirmed items were checked against a source record. Inferred and "
+        "Unverified items are shown for review and are not confirmed facts; Contested "
+        "connections were flagged by the automated critic; Refuted items are hidden from the map."
     )
 
 render_plain_evidence_list(cards)
@@ -92,6 +119,8 @@ card = next((item for item in cards if item["node_id"] == selected_id), None)
 if card is None:
     st.info("Select an item above to submit a faculty decision.")
     st.stop()
+
+render_record_evidence(card)
 
 decision = st.radio(
     "Faculty decision",

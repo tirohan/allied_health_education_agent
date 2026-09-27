@@ -87,6 +87,8 @@ async def mindmap_node(state: MindMapState) -> MindMapState:
         root_node_id="query_root" if "query_root" in node_ids else (nodes[0].id if nodes else None),
         query=state["query"],
         total_sources=len(state.get("retrieved_docs", [])),
+        snapshot_id=str(state.get("snapshot_id") or "unsnapshotted"),
+        scope_notes=list(state.get("scope_notes") or []),
     )
     return {
         **state,
@@ -203,6 +205,7 @@ def _edge_from_relation(
         dashes=status
         in {VerificationStatus.INFERRED, VerificationStatus.UNVERIFIED, VerificationStatus.CONTESTED},
         relation_id=relation.relation_id,
+        verification_status=status,
     )
 
 

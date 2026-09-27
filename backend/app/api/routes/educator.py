@@ -19,6 +19,7 @@ from backend.app.services.educator import (
 )
 from backend.app.services.faculty_review import submit_faculty_review
 from backend.app.services.gap_finder import find_education_gaps
+from backend.app.services.provenance import record_evidence
 from backend.app.services.teaching_pack import (
     build_teaching_pack,
     teaching_pack_to_docx_bytes,
@@ -109,6 +110,19 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         settings.openai_model,
     )
     return ChatResponse(**result)
+
+
+@router.get("/record-evidence")
+async def get_record_evidence(
+    request: Request,
+    table_name: str,
+    record_id: str,
+    id_column: str | None = None,
+) -> dict:
+    """field_provenance rows (latest complete snapshot) plus the latest faculty review."""
+    return await record_evidence(
+        request.app.state.services.postgres, table_name, record_id, id_column
+    )
 
 
 @router.post("/review")

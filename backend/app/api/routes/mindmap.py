@@ -200,6 +200,8 @@ def _initial_state(body: MindMapRequest) -> MindMapState:
         "mindmap_graph": None,
         "citations": [],
         "confidence_scores": {},
+        "snapshot_id": "unsnapshotted",
+        "scope_notes": [],
         "agent_trace": [],
         "error": None,
     }

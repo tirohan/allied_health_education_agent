@@ -108,7 +108,7 @@ class HybridSearch:
             vector_results,
             sql_results,
             top_k=top_k * 3,
-            alpha=0.30,
+            alpha=0.70,
         )
         return teaching_rerank(
             query,
@@ -422,10 +422,10 @@ def reciprocal_rank_fusion(
     vector_results: list[RetrievedDoc],
     sql_results: list[RetrievedDoc],
     top_k: int,
-    alpha: float = 0.30,
+    alpha: float = 0.70,
     k: int = 60,
 ) -> list[RetrievedDoc]:
-    """Fuse ranks with keyword-heavy weighting (default alpha=0.30 for vectors)."""
+    """Fuse ranks with dense-preferred weighting (default alpha=0.70 for vectors)."""
 
     by_source: dict[tuple[str, str], RetrievedDoc] = {}
     scores: defaultdict[tuple[str, str], float] = defaultdict(float)

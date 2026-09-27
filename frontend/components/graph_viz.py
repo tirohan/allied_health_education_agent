@@ -66,8 +66,8 @@ def render_trust_legend(graph_data: dict[str, Any] | None = None) -> None:
             unsafe_allow_html=True,
         )
         st.caption(
-            "Items that fail verification are automatically left off the map, "
-            "so everything you see has at least some evidence behind it."
+            "Refuted items are left off the map. Only solid green connections were "
+            "checked against a source record; dashed ones are not confirmed facts."
         )
 
 
