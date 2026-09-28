@@ -500,6 +500,20 @@ async def test_verify_mapped_to_confirmed_via_junction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_verify_mapped_to_caps_machine_inferred_junction() -> None:
+    resource, topic, rel = _resource_topic("r1", "x")
+    db = QueuedPostgres(fetchrow_results=[{
+        "resource_id": "r1",
+        "topic_tag": "opioid_substance_use",
+        "topic_source": "rule_based_inference",
+    }])
+    result = await verify_relation(db, rel, _entities(resource, topic))  # type: ignore[arg-type]
+    assert result.verification_status == VerificationStatus.INFERRED
+    assert result.verification_method == "junction_check"
+    assert "capped at INFERRED" in (result.evidence_snippet or "")
+
+
+@pytest.mark.asyncio
 async def test_verify_mapped_to_inferred_via_text_fallback_when_no_junction_row() -> None:
     resource, topic, rel = _resource_topic("r2", "Opioid Overdose Toolkit")
     db = QueuedPostgres(fetchrow_results=[

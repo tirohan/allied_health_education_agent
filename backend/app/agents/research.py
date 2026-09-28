@@ -8,7 +8,7 @@ from backend.app.services.provenance import latest_snapshot_id
 async def research_node(state: MindMapState, config: RunnableConfig) -> MindMapState:
     services = config["configurable"]["services"]
     search = HybridSearch(services.postgres, services.qdrant, services.embedder)
-    retrieval_mode = str(state.get("retrieval_mode") or "hybrid")
+    retrieval_mode = str(state.get("retrieval_mode") or "vector")
     # Retrieval depth is deliberately decoupled from max_nodes: max_nodes caps the
     # *rendered* graph size (applied later during pruning in mindmap.py), but
     # retrieval needs a wider pool of candidate documents to extract from and

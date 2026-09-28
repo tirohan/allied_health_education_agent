@@ -71,6 +71,17 @@ _GENERIC_TOPIC_WORDS = {
 
 _STOP_WORDS = {"and", "or", "the", "of", "for", "in", "on", "to", "a", "an"}
 
+# resource_topics.topic_source values that are machine- or rule-inferred.
+# A matching junction of this kind may ground INFERRED, never CONFIRMED.
+_MACHINE_TOPIC_SOURCE_MARKERS = ("rule", "machine", "model", "llm", "infer", "embedding")
+
+
+def _is_machine_inferred_topic_source(value: object) -> bool:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _MACHINE_TOPIC_SOURCE_MARKERS)
+
 
 def _significant_words(text: str) -> set[str]:
     words = {word for word in text.replace("-", " ").split() if len(word) > 2}
@@ -353,6 +364,18 @@ async def _verify_mapped_to(
             target.source_id,
         )
         if row is not None:
+            if _is_machine_inferred_topic_source(row.get("topic_source")):
+                return _result(
+                    relation.relation_id,
+                    VerificationStatus.INFERRED,
+                    relation.confidence,
+                    "junction_check",
+                    "resource_topics.resource_id/topic_tag",
+                    (
+                        "; ".join(f"{key}={value}" for key, value in row.items())
+                        + "; machine/rule-inferred topic source is capped at INFERRED"
+                    )[:500],
+                )
             return _junction_result(relation, row, "resource_topics.resource_id/topic_tag")
 
         # No resource_topics row -- fall back to a text match against the

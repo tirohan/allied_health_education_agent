@@ -78,12 +78,12 @@ class HybridSearch:
         collections: list[RetrievalCollection],
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
-        mode: str = "hybrid",
+        mode: str = "vector",
     ) -> list[RetrievedDoc]:
         filters = filters or {}
-        mode_normalized = (mode or "hybrid").strip().lower()
+        mode_normalized = (mode or "vector").strip().lower()
         if mode_normalized not in {"hybrid", "vector", "keyword"}:
-            mode_normalized = "hybrid"
+            mode_normalized = "vector"
         vector_results: list[RetrievedDoc] = []
         sql_results: list[RetrievedDoc] = []
         # Keep representation across collections instead of letting one domain dominate.
